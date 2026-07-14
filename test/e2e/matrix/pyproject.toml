@@ -1,0 +1,11 @@
+[project]
+name = "veilist-e2e-matrix"
+version = "0.0.0"
+description = "single compliance driver: runs the shared flows against every frontend"
+requires-python = ">=3.11"
+dependencies = [
+    "websocket-client>=1.7",
+    "Appium-Python-Client>=4.0",
+    "appium-flutter-finder>=0.5",
+    "playwright>=1.40",
+]

@@ -1,0 +1,13 @@
+[project]
+name = "veilist-e2e-appium"
+version = "0.0.0"
+description = "true ui end-to-end tests: drive the real app via appium flutter-driver"
+requires-python = ">=3.10"
+dependencies = [
+    "pytest>=8.0",
+    "Appium-Python-Client>=4.0",
+    "appium-flutter-finder>=0.4",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"

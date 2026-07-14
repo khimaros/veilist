@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<!-- inline background so the page paints dark from the very first parse,
+     before any stylesheet or flutter loads - avoids a white flash. -->
+<html style="background-color:#121318">
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <!-- without this, mobile browsers lay out at ~980px and scale down, so
+       everything (e.g. the loading spinner) renders tiny. -->
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="simple, private list sharing over veilid">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="veilist">
+  <meta name="theme-color" content="#121318">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>veilist</title>
+  <link rel="manifest" href="manifest.json">
+
+  <style>
+    /* loading splash shown until the flutter app and veilid wasm are ready.
+       the veilid node is a full wasm blob, so first paint takes a moment. */
+    #veilist-splash {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      background: #121318;
+      color: #e6e6e6;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    #veilist-splash .spinner {
+      width: 56px;
+      height: 56px;
+      border: 5px solid rgba(255, 255, 255, 0.2);
+      border-top-color: #3584e4;
+      border-radius: 50%;
+      animation: veilist-spin 0.9s linear infinite;
+    }
+    #veilist-splash .label {
+      font-size: 16px;
+      letter-spacing: 0.02em;
+      opacity: 0.85;
+    }
+    @keyframes veilist-spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body style="background-color:#121318">
+  <!-- splash covers engine init and the veilid wasm download (the slow part),
+       then the flutter app removes it once it paints. -->
+  <div id="veilist-splash">
+    <div class="spinner"></div>
+    <div class="label" id="veilist-splash-label">loading veilist...</div>
+  </div>
+  <!--
+    veilid runs as a full node in the browser via wasm (R3, R8). the wasm glue
+    must be loaded and initialized before the flutter app starts, so we drive
+    the flutter loader manually and init veilid between engine init and runApp.
+    the blob under web/wasm/ is produced by `make wasm` (scripts/build_wasm.sh).
+  -->
+  <script type="module">
+    {{flutter_js}}
+    {{flutter_build_config}}
+
+    function splashLabel(text) {
+      const el = document.getElementById('veilist-splash-label');
+      if (el) el.textContent = text;
+    }
+
+    async function initVeilidWasm() {
+      splashLabel('starting veilid node...');
+      // resolve the wasm glue against the document base (which honours
+      // <base href>, just like flutter's own asset loader) so it works whether
+      // the app is served at / or a sub-path like /list/. the glue then loads
+      // its .wasm relative to its own url.
+      const url = new URL('wasm/veilid_flutter.js', document.baseURI).href;
+      const veilid_flutter_module = await import(url);
+      window.veilid_flutter = veilid_flutter_module;
+      await veilid_flutter_module.default();
+      await veilid_flutter_module.initialize_veilid_wasm();
+    }
+
+    _flutter.loader.load({
+      onEntrypointLoaded: async function (engineInitializer) {
+        splashLabel('loading app...');
+        const appRunner = await engineInitializer.initializeEngine();
+        await initVeilidWasm();
+        await appRunner.runApp();
+        document.getElementById('veilist-splash')?.remove();
+      }
+    });
+  </script>
+</body>
+</html>

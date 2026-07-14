@@ -1,0 +1,19 @@
+{
+  "name": "e2e-appium",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "appium": "^3.5.2"
+  },
+  "devDependencies": {
+    "appium-flutter-driver": "^3.9.0"
+  }
+}

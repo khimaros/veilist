@@ -1,0 +1,94 @@
+# build the android apk (arm64) and the x86_64 linux binary whenever a vX.Y.Z
+# tag is pushed, then attach both to a github release named after the tag. the
+# build name is taken from the tag (v0.1.0 -> 0.1.0); the build number is the
+# run number so each build is distinct.
+#
+# toolchains come from mise.toml (flutter, rust, android-sdk, java), so the ci
+# builds with the exact pinned versions.
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write # create the release and upload the assets
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: echo "name=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - uses: jdx/mise-action@v2 # installs mise + the pinned tools from mise.toml
+      - name: android ndk + rust android target
+        # the veilid ffi is cross-compiled with cargo via the ndk during the
+        # gradle build, so both the ndk and the rust android target are needed.
+        run: |
+          yes | mise exec -- sdkmanager --licenses >/dev/null 2>&1 || true
+          mise exec -- sdkmanager "ndk;28.2.13676358"
+          mise exec -- rustup target add aarch64-linux-android
+      - name: build apk
+        run: >
+          mise exec -- flutter build apk --release
+          --split-per-abi --target-platform android-arm64
+          --build-name "${{ steps.v.outputs.name }}"
+          --build-number "${{ github.run_number }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    # build on musl (alpine). NOTE: flutter's prebuilt linux engine is
+    # glibc-linked, so gcompat is required and the result is not a pure static
+    # musl binary; it runs on musl systems via gcompat.
+    container:
+      image: alpine:3.20
+    steps:
+      - name: musl build deps
+        run: |
+          apk add --no-cache bash curl git xz unzip zip coreutils grep sed \
+            build-base cmake samurai clang lld pkgconf musl-dev \
+            gtk+3.0-dev glib-dev libepoxy-dev pcre2-dev \
+            gcompat
+      - uses: actions/checkout@v4
+      - id: v
+        run: echo "name=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - uses: jdx/mise-action@v2
+      - name: rust musl target
+        run: mise exec -- rustup target add x86_64-unknown-linux-musl
+      - name: build linux
+        run: |
+          mise exec -- flutter config --enable-linux-desktop
+          mise exec -- flutter build linux --release \
+            --build-name "${{ steps.v.outputs.name }}" \
+            --build-number "${{ github.run_number }}"
+          tar -C build/linux/x64/release/bundle \
+            -czf "veilist-${{ steps.v.outputs.name }}-linux-x64-musl.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: veilist-*-linux-x64-musl.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: [android, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: create github release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/android/*.apk dist/linux/*.tar.gz
