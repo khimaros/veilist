@@ -12,8 +12,11 @@ OUT="$ROOT/web/wasm"
 # keep this in step with the wasm-bindgen version in the veilid Cargo.lock.
 WBGEN_VERSION="0.2.121"
 
-# rust tools come from mise; wasm-bindgen-cli installs under ~/.cargo/bin.
-export PATH="$(mise where rust 2>/dev/null)/bin:$HOME/.cargo/bin:$PATH"
+# rust tools come from mise. under mise, cargo's home is the per-version rust
+# dir, so `cargo install` tools (wasm-bindgen-cli) land in its bin. set it
+# explicitly and put it on PATH so a rust version bump does not orphan them.
+export CARGO_HOME="$(mise where rust 2>/dev/null)"
+export PATH="$CARGO_HOME/bin:$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="$ROOT/build/wasm-target"
 
 VEILID_SRC="$(find "$HOME/.pub-cache/git" -maxdepth 1 -type d -name 'veilid-*' \

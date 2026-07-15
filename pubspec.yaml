@@ -46,7 +46,7 @@ dependencies:
 
   # app_links delivers incoming share links (custom scheme + universal/app
   # links on mobile, the page url on web) so a link opens the right list (R2).
-  app_links: ^6.3.0
+  app_links: ^7.2.1
 
   # material you: pull the accent color from the device (android 12+), falling
   # back to a seed color.

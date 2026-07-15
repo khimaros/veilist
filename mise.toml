@@ -1,9 +1,12 @@
 [tools]
-# flutter drives the android/linux/web builds; dart ships inside it.
-flutter = "3.44.3-stable"
+# flutter drives the android/linux/web builds; dart ships inside it. pin the
+# bare version (no "-stable" suffix): newer mise appends the channel itself, so a
+# suffixed version yields a doubled "-stable-stable" download url that 404s.
+flutter = "3.44.6"
 # rust builds the veilid native library (ffi) and the wasm blob for web.
-rust = "1.95.0"
+rust = "1.97.0"
 # android sdk + jdk for the android build and the emulator e2e. the emulator
-# package and a system image are added into this sdk by scripts/android_e2e.sh.
+# package and a system image are added into this sdk by
+# test/scripts/android_e2e_setup.sh.
 android-sdk = "16.0"
 java = "temurin-21"

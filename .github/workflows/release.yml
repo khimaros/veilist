@@ -23,13 +23,16 @@ jobs:
       - id: v
         run: echo "name=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - uses: jdx/mise-action@v2 # installs mise + the pinned tools from mise.toml
-      - name: android ndk + rust android target
+      - name: android ndk + rust android targets
         # the veilid ffi is cross-compiled with cargo via the ndk during the
-        # gradle build, so both the ndk and the rust android target are needed.
+        # gradle build. the plugin's rust-android build compiles every abi
+        # (arm/arm64/x86/x86_64) regardless of --target-platform, so all four
+        # rust targets are needed even though the release apk is arm64-only.
         run: |
           yes | mise exec -- sdkmanager --licenses >/dev/null 2>&1 || true
           mise exec -- sdkmanager "ndk;28.2.13676358"
-          mise exec -- rustup target add aarch64-linux-android
+          mise exec -- rustup target add aarch64-linux-android \
+            armv7-linux-androideabi i686-linux-android x86_64-linux-android
       - name: build apk
         run: >
           mise exec -- flutter build apk --release
@@ -52,8 +55,11 @@ jobs:
     steps:
       - name: musl build deps
         run: |
-          apk add --no-cache bash curl git xz unzip zip coreutils grep sed \
-            build-base cmake samurai clang lld pkgconf musl-dev \
+          # gnu tar + zstd: mise's musl release is a .tar.zst that mise-action
+          # unpacks with `tar --zstd`, which alpine's busybox tar cannot do; gnu
+          # tar (installed to /usr/bin, ahead of busybox in PATH) handles it.
+          apk add --no-cache bash curl git tar zstd xz unzip zip coreutils \
+            grep sed build-base cmake samurai clang lld pkgconf musl-dev \
             gtk+3.0-dev glib-dev libepoxy-dev pcre2-dev \
             gcompat
       - uses: actions/checkout@v4

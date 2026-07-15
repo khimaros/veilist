@@ -252,6 +252,14 @@ on a canvas-rendered ui everywhere. `make test-compliance`.
       `test/e2e/{matrix,appium}`, the driver entrypoint to `test/driver/app.dart`,
       and the test scripts to `test/scripts/` (build scripts stay in `scripts/`)
 
+## dependency maintenance
+
+- [x] bump app_links to 7.x (only direct dep with a newer resolvable version;
+      the other stragglers are transitive and pinned by the flutter 3.44.6 sdk).
+      7.x breaking changes are ios-only (ios 13 min + uiscenedelegate migration);
+      our targets are linux/android/web and we only use AppLinks()/getInitialLink()
+      /uriLinkStream, all stable across 7.x. re-run the link flows to confirm R2.
+
 ## later
 
 - [ ] remaining item states beyond new/active/complete (obsolete, undecided,
