@@ -266,11 +266,12 @@ on a canvas-rendered ui everywhere. `make test-compliance`.
       ci and fresh checkouts still failed. the hardened script removes the git
       block entirely (idempotent, fails loud on layout drift). upstream has no
       supported route (same code on veilid main); revisit if that changes.
-- [ ] ci linux (musl) build: rust drops the cdylib under the musl target's default
-      crt-static, so libveilid_flutter.so is never produced and the flutter bundle
-      copy fails. build the linux job with RUSTFLAGS=-C target-feature=-crt-static
-      so the shared lib is emitted (alpine links musl dynamically anyway). exposed
-      once the rust.cmake patch let cmake find the crate; latent before that.
+- [x] ci linux release moved from musl/alpine to glibc/ubuntu. flutter ships only
+      a glibc linux engine, so the musl build hit one incompatibility after another
+      once the rust.cmake patch let it get further - rust drops the cdylib under
+      musl's default crt-static, and the glibc engine needs a libdl.so.2 that musl
+      folds into libc. with no musl engine to switch to, glibc is the supported
+      route; the switch drops the musl target, gcompat, and the busybox-tar workarounds.
 
 ## later
 

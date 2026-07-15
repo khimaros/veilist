@@ -133,9 +133,10 @@ android arm64 apk and the linux x86_64 binary (build name taken from the tag)
 and attaches both to a github release. the version in `pubspec.yaml` is the
 fallback build name.
 
-note: the linux job builds on alpine (musl) with `gcompat`, because flutter's
-prebuilt linux engine is glibc-linked - so the binary runs on musl systems via
-gcompat rather than being a pure static musl build.
+note: the linux job builds on ubuntu (glibc) to match flutter's prebuilt linux
+engine, which is glibc-linked; the binary needs a comparable glibc at runtime. it
+also runs `scripts/patch_veilid_linux.sh` after `pub get`, since veilid's linux
+plugin cmake assumes an in-monorepo build (see DESIGN.md "native builds").
 
 ## style
 

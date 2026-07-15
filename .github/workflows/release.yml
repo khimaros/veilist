@@ -46,40 +46,28 @@ jobs:
           if-no-files-found: error
 
   linux:
+    # build on glibc (ubuntu), matching flutter's prebuilt linux engine, which is
+    # glibc-linked. an earlier musl/alpine build hit successive engine-vs-musl
+    # incompatibilities (a dropped rust cdylib, then a missing libdl.so.2) with no
+    # musl engine to switch to, so glibc is the supported route.
     runs-on: ubuntu-latest
-    # build on musl (alpine). NOTE: flutter's prebuilt linux engine is
-    # glibc-linked, so gcompat is required and the result is not a pure static
-    # musl binary; it runs on musl systems via gcompat.
-    container:
-      image: alpine:3.20
     steps:
-      - name: musl build deps
-        run: |
-          # gnu tar + zstd: mise's musl release is a .tar.zst that mise-action
-          # unpacks with `tar --zstd`, which alpine's busybox tar cannot do; gnu
-          # tar (installed to /usr/bin, ahead of busybox in PATH) handles it.
-          apk add --no-cache bash curl git tar zstd xz unzip zip coreutils \
-            grep sed build-base cmake samurai clang lld pkgconf musl-dev \
-            gtk+3.0-dev glib-dev libepoxy-dev pcre2-dev \
-            gcompat
       - uses: actions/checkout@v4
       - id: v
         run: echo "name=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: linux desktop build deps
+        # flutter's linux desktop build drives clang/cmake/ninja and links the gtk3
+        # dev libraries; the rest (git, gcc, the gnu rust target) is preinstalled.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev
       - uses: jdx/mise-action@v2
-      - name: rust musl target
-        run: mise exec -- rustup target add x86_64-unknown-linux-musl
       - name: build linux
         # the veilid linux plugin cmake assumes an in-monorepo build; patch it for
         # external consumption after pub get (see scripts/patch_veilid_linux.sh).
         # the build's own implicit pub get reuses the cached checkout, so the patch
         # survives.
-        env:
-          # rust drops the cdylib for the musl target under the default crt-static,
-          # so libveilid_flutter.so is never produced and the flutter bundle step
-          # fails copying it. disable crt-static so the shared lib builds (alpine
-          # links musl dynamically anyway). corrosion leaves ambient RUSTFLAGS
-          # alone here (it only sets RUSTFLAGS when a target adds global flags).
-          RUSTFLAGS: "-C target-feature=-crt-static"
         run: |
           mise exec -- flutter config --enable-linux-desktop
           mise exec -- flutter pub get
@@ -88,11 +76,11 @@ jobs:
             --build-name "${{ steps.v.outputs.name }}" \
             --build-number "${{ github.run_number }}"
           tar -C build/linux/x64/release/bundle \
-            -czf "veilist-${{ steps.v.outputs.name }}-linux-x64-musl.tar.gz" .
+            -czf "veilist-${{ steps.v.outputs.name }}-linux-x64.tar.gz" .
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: veilist-*-linux-x64-musl.tar.gz
+          path: veilist-*-linux-x64.tar.gz
           if-no-files-found: error
 
   release:
