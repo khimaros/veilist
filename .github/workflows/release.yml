@@ -69,8 +69,14 @@ jobs:
       - name: rust musl target
         run: mise exec -- rustup target add x86_64-unknown-linux-musl
       - name: build linux
+        # the veilid linux plugin cmake assumes an in-monorepo build; patch it for
+        # external consumption after pub get (see scripts/patch_veilid_linux.sh).
+        # the build's own implicit pub get reuses the cached checkout, so the patch
+        # survives.
         run: |
           mise exec -- flutter config --enable-linux-desktop
+          mise exec -- flutter pub get
+          bash scripts/patch_veilid_linux.sh
           mise exec -- flutter build linux --release \
             --build-name "${{ steps.v.outputs.name }}" \
             --build-number "${{ github.run_number }}"

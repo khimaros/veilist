@@ -259,6 +259,13 @@ on a canvas-rendered ui everywhere. `make test-compliance`.
       7.x breaking changes are ios-only (ios 13 min + uiscenedelegate migration);
       our targets are linux/android/web and we only use AppLinks()/getInitialLink()
       /uriLinkStream, all stable across 7.x. re-run the link flows to confirm R2.
+- [ ] wire scripts/patch_veilid_linux.sh into `make deps` and the ci linux job.
+      veilid's linux plugin cmake assumes an in-monorepo build (`git rev-parse`),
+      which breaks external pub/git consumption and crashes ci cmake on a "dubious
+      ownership" git refusal. the patch was applied by hand to the pub cache, so
+      ci and fresh checkouts still failed. the hardened script removes the git
+      block entirely (idempotent, fails loud on layout drift). upstream has no
+      supported route (same code on veilid main); revisit if that changes.
 
 ## later
 

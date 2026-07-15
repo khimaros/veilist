@@ -145,6 +145,20 @@ background inline on `<html>`/`<body>` (before any css parses, to avoid a white
 flash) and shows a spinner splash that reports engine/node progress; the flutter
 app removes it once it paints.
 
+## native builds (android/linux)
+
+the veilid rust core is cross-compiled into the app during the flutter build:
+android drives cargo through the rust-android gradle plugin, linux through
+corrosion in the plugin's `linux/rust.cmake`. that cmake locates the crate by
+walking up to the veilid monorepo root (`git rev-parse`), which only works when
+the plugin is built inside a veilid checkout. consumed as an external pub/git
+dependency the path is wrong, and in ci a "dubious ownership" git refusal makes
+the empty result abort cmake. veilid ships no supported path for external linux
+desktop builds (the same code is on veilid main), so `make deps` (and the ci
+linux job) run `scripts/patch_veilid_linux.sh` after every `flutter pub get` to
+point corrosion at the plugin's own bundled crate. android is unaffected (a
+different build path), as is web (the wasm blob).
+
 ## opening a record as a joiner
 
 `createDHTRecord` is local-only, and the creator's `setDHTValue` calls publish
