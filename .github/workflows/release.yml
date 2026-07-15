@@ -73,6 +73,13 @@ jobs:
         # external consumption after pub get (see scripts/patch_veilid_linux.sh).
         # the build's own implicit pub get reuses the cached checkout, so the patch
         # survives.
+        env:
+          # rust drops the cdylib for the musl target under the default crt-static,
+          # so libveilid_flutter.so is never produced and the flutter bundle step
+          # fails copying it. disable crt-static so the shared lib builds (alpine
+          # links musl dynamically anyway). corrosion leaves ambient RUSTFLAGS
+          # alone here (it only sets RUSTFLAGS when a target adds global flags).
+          RUSTFLAGS: "-C target-feature=-crt-static"
         run: |
           mise exec -- flutter config --enable-linux-desktop
           mise exec -- flutter pub get
