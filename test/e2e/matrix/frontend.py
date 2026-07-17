@@ -60,6 +60,23 @@ class Frontend:
         """advance one item's state one step (new -> active -> complete -> new)."""
         raise SkipFlow("cycle_item unsupported")
 
+    def cycle_item_nowait(self, text):
+        """cycle an item's state without waiting for the network write to flush,
+        so a second member's write can overlap in the same storage-node flush
+        window (~1s). defaults to the blocking cycle_item, which already returns
+        before the write completes on the widget frontends (a driver tap does not
+        await the async flush); the web hook awaits it, so web overrides this."""
+        self.cycle_item(text)
+
+    def cycle_with_peer(self, peer, my_text, peer_text):
+        """this frontend cycles my_text and `peer` cycles peer_text as close to
+        simultaneously as possible, so both members' subkey writes land in one
+        storage-node flush window and coalesce into a single value-less watch
+        notification. default fires them back-to-back; frontends whose write call
+        blocks the caller (widget taps) override to run the two in parallel."""
+        self.cycle_item_nowait(my_text)
+        peer.cycle_item_nowait(peer_text)
+
     def edit_item(self, old, new):
         raise SkipFlow("edit_item unsupported")
 
@@ -95,6 +112,19 @@ class Frontend:
         """return to the listing page. widget frontends navigate there; the web
         frontend queries the roster regardless of page, so it is a no-op."""
 
+    def go_offline(self):
+        """detach this frontend's veilid node from the network."""
+        raise SkipFlow("go_offline unsupported")
+
+    def go_online(self):
+        """re-attach this frontend's veilid node to the network."""
+        raise SkipFlow("go_online unsupported")
+
+    def set_foreground(self, foreground):
+        """toggle foreground sync: True mimics sitting on the listing (sync
+        running), False mimics the app being backgrounded (sync stopped)."""
+        raise SkipFlow("set_foreground unsupported")
+
     # ---- queries ----
     # widget frontends cannot enumerate items (profile builds strip the
     # diagnostics tree, and both adapters only *order given* texts), so the
@@ -109,6 +139,13 @@ class Frontend:
     def has_item(self, text):
         """whether the current list shows an item with this text."""
         raise SkipFlow("has_item query unsupported")
+
+    def item_state(self, text):
+        """the state of the item with this text, as its wire code: one of
+        new | active | complete (the v1 cycle; the model carries more). web
+        reads the folded state via the hook; widget frontends read the checkbox
+        glyph via the driver."""
+        raise SkipFlow("item_state query unsupported")
 
     def item_order(self, texts):
         """the given item texts in the order they appear (absent ones dropped)."""
@@ -143,6 +180,18 @@ class Frontend:
     def wait_for_order(self, order, timeout_s=None):
         self._poll(
             lambda: self.item_order(order) == order, timeout_s, f"order {order}"
+        )
+
+    def wait_for_state(self, text, state, timeout_s=None):
+        self._poll(
+            lambda: self.item_state(text) == state,
+            timeout_s,
+            f"state '{state}' for '{text}'",
+        )
+
+    def wait_for_sync_status(self, status, timeout_s=None):
+        self._poll(
+            lambda: self.sync_status() == status, timeout_s, f"sync status '{status}'"
         )
 
     def wait_for_title(self, title, timeout_s=None):

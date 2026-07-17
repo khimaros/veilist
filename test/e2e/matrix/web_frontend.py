@@ -172,6 +172,35 @@ class WebFrontend(Frontend):
     def cycle_item(self, text):
         self._call("cycle", self._current, self._id_of(text))
 
+    def cycle_item_nowait(self, text):
+        # kick off the cycle write but do not await its network fanout, so a
+        # second member's concurrent write lands in the same storage-node flush
+        # window (the hook's cycle() otherwise blocks on setDHTValue).
+        self._fire_cycle(self._id_of(text))
+
+    def _fire_cycle(self, iid):
+        self._page.evaluate(
+            "(a) => { window.veilistTest.cycle(a[0], a[1]); return 0; }",
+            [self._current, iid],
+        )
+
+    def cycle_with_peer(self, peer, my_text, peer_text):
+        # playwright's sync api is not thread-safe, so resolve both item ids
+        # first, then fire the two non-awaited writes back-to-back (one evaluate
+        # round-trip apart) so they still coalesce in one flush window.
+        my_id, their_id = self._id_of(my_text), peer._id_of(peer_text)
+        self._fire_cycle(my_id)
+        peer._fire_cycle(their_id)
+
+    def go_offline(self):
+        self._call("setOnline", False)
+
+    def go_online(self):
+        self._call("setOnline", True)
+
+    def set_foreground(self, foreground):
+        self._call("setForeground", foreground)
+
     def edit_item(self, old, new):
         self._call("setText", self._current, self._id_of(old), new)
 
@@ -215,6 +244,12 @@ class WebFrontend(Frontend):
 
     def has_item(self, text):
         return text in self._texts()
+
+    def item_state(self, text):
+        for it in self._items():
+            if it["text"] == text:
+                return it["state"]
+        raise AssertionError(f"item '{text}' not found")
 
     def item_order(self, texts):
         return [t for t in self._texts() if t in texts]

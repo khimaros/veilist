@@ -46,6 +46,27 @@ class WidgetFrontend(Frontend):
         u.tap(d, u.in_tile(text, "StateGlyphButton"))
         u.settle(d, 0.5)
 
+    def cycle_item_nowait(self, text):
+        # tap the checkbox but skip the settle, so a second member's tap follows
+        # immediately and both writes land in one storage-node flush window.
+        self.ui.tap(self.d, self.ui.in_tile(text, "StateGlyphButton"))
+
+    def cycle_with_peer(self, peer, my_text, peer_text):
+        # a driver tap blocks the caller for its round-trip, so back-to-back taps
+        # are tens of ms apart - enough to sometimes straddle the 1s flush window.
+        # each frontend has its own driver connection, so tap both in parallel
+        # threads to fire them together and coalesce reliably.
+        import threading
+
+        workers = [
+            threading.Thread(target=lambda: self.cycle_item_nowait(my_text)),
+            threading.Thread(target=lambda: peer.cycle_item_nowait(peer_text)),
+        ]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join()
+
     def edit_item(self, old, new):
         u, d = self.ui, self.d
         u.tap(d, u.text(old))
@@ -138,12 +159,33 @@ class WidgetFrontend(Frontend):
     def go_listing(self):
         self.ui.home(self.d)
 
+    # e2e control channel (driver requestData -> test/driver/app.dart handler).
+    def go_offline(self):
+        self.ui.request_data(self.d, "offline")
+
+    def go_online(self):
+        self.ui.request_data(self.d, "online")
+
+    def set_foreground(self, foreground):
+        self.ui.request_data(self.d, "foreground" if foreground else "background")
+
     # ---- queries ----
     def list_present(self, name):
         return self._present(self.ui.text(name))
 
     def has_item(self, text):
         return self._present(self.ui.text(text))
+
+    # glyph rendered by StateGlyphButton -> wire code (see ItemState). "new"
+    # renders an empty glyph, so an empty string maps back to it.
+    _GLYPH_STATE = {"": "new", " ": "new", "@": "active", "x": "complete"}
+
+    def item_state(self, text):
+        u, d = self.ui, self.d
+        glyph = u.get_text(
+            d, u.descendant(u.in_tile(text, "StateGlyphButton"), u.type_("Text")), SHORT_MS
+        )
+        return self._GLYPH_STATE.get(glyph, glyph)
 
     def item_order(self, texts):
         return self.ui.item_order(self.d, texts)

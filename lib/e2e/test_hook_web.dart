@@ -5,6 +5,7 @@ import 'dart:js_interop_unsafe';
 import '../data/list_repository.dart';
 import '../data/open_list.dart';
 import '../data/share_link.dart';
+import '../veilid/veilid_service.dart';
 
 /// exposes `window.veilistTest` with async list operations, each returning a
 /// promise. lets the browser e2e (and the compliance matrix's web frontend)
@@ -116,6 +117,22 @@ void installTestHook(ListRepository repo) {
     return (opened.canEdit ? 'true' : 'false').toJS;
   })().toJS;
 
+  // take the node offline/online (detach/attach), to test that edits made while
+  // offline flush once re-attached.
+  JSPromise<JSString> setOnline(JSBoolean online) => (() async {
+    await VeilidService.instance.setOnline(online.toDart);
+    return 'ok'.toJS;
+  })().toJS;
+
+  // toggle foreground sync, to simulate the app being backgrounded (off) versus
+  // sitting on the listing (on).
+  JSPromise<JSString> setForeground(JSBoolean foreground) => (() async {
+    await (foreground.toDart
+        ? repo.startForegroundSync()
+        : repo.stopForegroundSync());
+    return 'ok'.toJS;
+  })().toJS;
+
   // the roster as a json array of {recordKey, title, published}.
   JSString lists() {
     final data = [
@@ -140,6 +157,8 @@ void installTestHook(ListRepository repo) {
   hook.setProperty('title'.toJS, title.toJS);
   hook.setProperty('syncStatus'.toJS, syncStatus.toJS);
   hook.setProperty('editable'.toJS, editable.toJS);
+  hook.setProperty('setOnline'.toJS, setOnline.toJS);
+  hook.setProperty('setForeground'.toJS, setForeground.toJS);
   hook.setProperty('lists'.toJS, lists.toJS);
   globalContext.setProperty('veilistTest'.toJS, hook);
 }

@@ -29,10 +29,22 @@ class FakeDht {
 
   Map<int, String> readDocs(String key) => Map.of(_recs[key]?.docs ?? const {});
 
+  // failure injection: drop this many upcoming change notifications (the write
+  // still lands in the store), simulating watch updates the network silently
+  // loses, so a reader only catches them by reconciling.
+  int _dropChanges = 0;
+
+  /// drop the next [count] change notifications (writes still store).
+  void dropNextChanges(int count) => _dropChanges = count;
+
   void writeDoc(String key, int index, String json) {
     final rec = _recs[key];
     if (rec == null) return;
     rec.docs[index] = json;
+    if (_dropChanges > 0) {
+      _dropChanges--;
+      return; // notification lost; only a reconcile read will see this write
+    }
     _changes.add((recordKey: key, memberIndex: index, json: json));
   }
 

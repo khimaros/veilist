@@ -18,6 +18,15 @@ import 'local_list.dart';
 /// created here but not yet shared: it lives only on-device (nothing published).
 enum SyncStatus { synced, syncing, offline, local }
 
+/// how often the open list does upkeep (sync indicator + reconcile reads).
+const Duration _kTickInterval = Duration(seconds: 3);
+
+/// after the first live sync, re-read every Nth tick as a background reconcile.
+/// the watch is the fast path, but it can silently drop a change (a coalesced
+/// value notification, or a burst of writes a peer flushed on reconnect), so
+/// without this a live view could stay stranded an edit behind forever.
+const int _kReconcileEveryTicks = 4;
+
 class OpenList extends ChangeNotifier {
   OpenList({
     required this.local,
@@ -48,6 +57,8 @@ class OpenList extends ChangeNotifier {
   // indicator can read "synced" rather than "syncing".
   bool _liveSynced = false;
   SyncStatus _sync = SyncStatus.offline;
+  int _ticks = 0;
+  bool _wasReady = false;
   Timer? _syncTimer;
   VoidCallback? _onReadinessChanged;
   StreamSubscription<DocChange>? _changeSub;
@@ -92,7 +103,7 @@ class OpenList extends ChangeNotifier {
       // keep the sync indicator current, and retry the initial read until a
       // live sync lands (a record just opened on a fresh node may not be
       // reachable on the first try).
-      _syncTimer = Timer.periodic(const Duration(seconds: 3), (_) => _tick());
+      _syncTimer = Timer.periodic(_kTickInterval, (_) => _tick());
       // resync when the node (re)connects: the watch only delivers changes that
       // arrive live, so a peer's edit made while we were closed or offline is
       // otherwise never pulled in.
@@ -111,20 +122,28 @@ class OpenList extends ChangeNotifier {
     }
   }
 
-  // periodic upkeep while open: refresh the indicator and keep retrying the
-  // initial read until a live sync lands.
+  // periodic upkeep while open: refresh the sync indicator, and re-read - every
+  // tick until the first live sync lands, then a slower background reconcile so a
+  // change the watch dropped is still pulled in rather than stranding the view.
   void _tick() {
     unawaited(_updateSync());
-    if (_net.isReady && !_liveSynced) {
+    if (!_net.isReady) return;
+    _ticks++;
+    if (!_liveSynced || _ticks % _kReconcileEveryTicks == 0) {
       unawaited(refresh().catchError((Object _) {}));
     }
   }
 
-  // the node reconnected: pull anything that changed while we were offline.
+  // the node reconnected: pull anything that changed while we were offline. the
+  // watch only delivers live changes, so a reconnect after any offline gap must
+  // re-read - not only before the first live sync. fire on the actual
+  // not-ready -> ready edge, not every readiness ping.
   void _resyncIfReconnected() {
-    if (_net.isReady && !_liveSynced) {
+    final ready = _net.isReady;
+    if (ready && !_wasReady) {
       unawaited(refresh().catchError((Object _) {}));
     }
+    _wasReady = ready;
   }
 
   // synced once local writes have flushed to the network; syncing while any are

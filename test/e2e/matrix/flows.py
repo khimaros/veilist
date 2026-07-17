@@ -7,6 +7,15 @@ flows take a second frontend via f.peer()."""
 
 import uuid
 
+# a concurrent-edit round must converge well under veilid's 30s fallback change
+# inspection: live sync lands in a few seconds, so a coalesced value-less
+# notification that the app drops instead of re-reading shows up as a stall past
+# this timeout. one round coalesces only about half the time (it turns on the
+# storage node's 1s flush-tick boundary), so repeat enough rounds that a dropped
+# one is near-certain to be hit.
+CONCURRENT_CONVERGE_S = 20
+CONCURRENT_ROUNDS = 6
+
 
 def unique(prefix):
     return f"{prefix}-{uuid.uuid4().hex[:6]}"
@@ -162,6 +171,176 @@ def member_reorder_converges(f):  # R11 across devices
     f.wait_for_order(["platypus", "kangaroo"])
 
 
+def member_state_change_converges(f):  # R7 across devices
+    # one party cycles an item's state; another party viewing the same list must
+    # see it live, both ways - the mirror of member_reorder_converges for the
+    # state field. reported: marking an item active did not propagate to peers,
+    # though a reorder did.
+    b = f.peer()
+    name = unique("mstate")
+    _share_and_join(f, b, name, "task")
+    f.cycle_item("task")  # new -> active
+    b.wait_for_state("task", "active")
+    b.cycle_item("task")  # active -> complete
+    f.wait_for_state("task", "complete")
+
+
+def member_item_rename_converges(f):  # R11 across devices
+    # renaming a task (item text) must reach a peer viewing the list, the same
+    # way a reorder does. reported as a suspected sibling of the state bug.
+    b = f.peer()
+    name = unique("mtaskname")
+    _share_and_join(f, b, name, "byy milk")
+    f.edit_item("byy milk", "buy milk")
+    b.wait_for_item("buy milk")
+
+
+def concurrent_member_edits_converge(f):  # R4/R7 - coalesced value-less notify
+    # when two members write their own subkeys within the same storage-node
+    # flush window (~1s), veilid coalesces the two changes into a single
+    # ValueChanged that carries NO inline value - the app must re-read the
+    # changed range. dropping it (the bug) leaves each party blind to the other's
+    # edit until veilid's ~30s fallback inspection. this is the live-collaboration
+    # case behind "marking an item active did not reach the other party while a
+    # reorder (done while only one side was writing) did".
+    b = f.peer()
+    name = unique("concur")
+    _new_list(f, name)
+    f.add_item("alpha")
+    f.add_item("bravo")
+    link = f.share()
+    assert b.open_link(link)
+    b.wait_for_item("alpha")
+    b.wait_for_item("bravo")
+    # A cycles alpha and B cycles bravo at the same instant, round after round.
+    # each round asserts the cross-device state lands fast; a coalesced round the
+    # app dropped stalls past the timeout. states advance new -> active ->
+    # complete -> new as each item is cycled once per round.
+    after_cycle = ["active", "complete", "new"]
+    for r in range(CONCURRENT_ROUNDS):
+        f.cycle_with_peer(b, "alpha", "bravo")  # A -> subkey 0, B -> subkey 2
+        want = after_cycle[r % 3]
+        b.wait_for_state("alpha", want, timeout_s=CONCURRENT_CONVERGE_S)
+        f.wait_for_state("bravo", want, timeout_s=CONCURRENT_CONVERGE_S)
+
+
+def offline_edit_reaches_peer_after_reconnect(f):  # R12 - deterministic receive
+    # f edits while genuinely offline (confirmed via the sync chip), reconnects,
+    # and confirms its OWN write flushed to the dht (chip reads 'synced'). the
+    # value is now provably on the network, so a peer viewing the list must show
+    # it. isolates the receive side: if the peer never sees it, it missed the live
+    # watch update and never reconciled (OpenList stops re-reading after its first
+    # live sync). one edit, proper sequencing -> no timing flake.
+    b = f.peer()
+    name = unique("offlrx")
+    _share_and_join(f, b, name, "seed")
+    f.go_offline()
+    f.wait_for_sync_status("offline", timeout_s=30)
+    f.cycle_item("seed")  # new -> active, guaranteed offline
+    f.go_online()
+    f.wait_for_sync_status("synced", timeout_s=120)  # f flushed to the dht
+    b.wait_for_state("seed", "active", timeout_s=45)  # peer must receive it
+
+
+def live_view_reconciles_missed_edits(f):  # R12/R13 - consistently-failing repro
+    # b is viewing a shared list (already live-synced). round after round, b goes
+    # offline, f cycles the item, and b reconnects and must show f's new state.
+    # each round b's watch cannot see f's edit (b was offline), so b must catch up
+    # on reconnect; the unfixed OpenList only re-reads before its FIRST live sync,
+    # so an already-synced view never resyncs and strands. one flaky round is
+    # ~1/3; looping makes a strand near-certain. no items are added, so the single
+    # tracked item stays on-screen for the driver.
+    b = f.peer()
+    name = unique("strand")
+    _share_and_join(f, b, name, "seed")
+    for _ in range(8):
+        b.go_offline()
+        b.wait_for_sync_status("offline", timeout_s=30)
+        f.cycle_item("seed")  # f edits while b is offline
+        want = f.item_state("seed")  # f's own view is the ground truth
+        b.go_online()
+        b.wait_for_sync_status("synced", timeout_s=90)  # b's node reconnected
+        b.wait_for_state("seed", want, timeout_s=20)  # b must catch up, or strand
+
+
+def peer_offline_misses_edit_then_reconnects(f):  # R12/R13 - deterministic
+    # b is viewing a shared list (already live-synced), then goes offline. f edits
+    # while b is offline, so b's watch cannot see it. when b reconnects it must
+    # catch up. reproduces the strand deterministically: OpenList only re-reads on
+    # reconnect while it has NOT yet live-synced, so an already-synced view that
+    # went offline never resyncs and stays one edit behind forever.
+    b = f.peer()
+    name = unique("boffl")
+    _share_and_join(f, b, name, "seed")
+    b.go_offline()
+    b.wait_for_sync_status("offline", timeout_s=30)
+    f.cycle_item("seed")  # new -> active while b is offline
+    f.wait_for_sync_status("synced", timeout_s=30)  # edit is on the dht
+    b.go_online()
+    b.wait_for_sync_status("synced", timeout_s=90)  # b's node is back online
+    b.wait_for_state("seed", "active", timeout_s=30)  # b must catch up
+
+
+def offline_multi_edits_reach_peer_after_reconnect(f):  # R12 - deterministic
+    # like the single-edit version but several rapid offline edits, then f
+    # confirms 'synced' (every edit flushed to the dht). the peer must show the
+    # full final state. reproduces the multi-edit flake: on reconnect f flushes a
+    # burst of successive seqs to its subkey; the peer's watch lands an
+    # intermediate seq but not the last, and never reconciles after its first live
+    # sync -> stuck one edit behind.
+    b = f.peer()
+    name = unique("offlmx")
+    _share_and_join(f, b, name, "seed")
+    f.go_offline()
+    f.wait_for_sync_status("offline", timeout_s=30)
+    f.add_item("off-1")
+    f.add_item("off-2")
+    f.add_item("off-3")
+    f.cycle_item("seed")  # last edit: new -> active
+    f.go_online()
+    f.wait_for_sync_status("synced", timeout_s=120)  # all edits now on the dht
+    b.wait_for_item("off-1", timeout_s=45)
+    b.wait_for_item("off-2", timeout_s=45)
+    b.wait_for_item("off-3", timeout_s=45)
+    b.wait_for_state("seed", "active", timeout_s=45)  # the final edit must land
+
+
+def offline_edits_flush_on_reconnect(f):  # R12
+    # a device makes several edits while offline, then sits on the listing with
+    # the list closed. once it reconnects it must flush every queued edit to a
+    # peer without the user reopening the list - "keep trying until synced" from
+    # the main screen.
+    b = f.peer()
+    name = unique("offl")
+    _share_and_join(f, b, name, "seed")
+    f.go_offline()
+    f.add_item("off-1")
+    f.add_item("off-2")
+    f.cycle_item("seed")  # new -> active, also queued offline
+    f.go_listing()  # main screen; the widget frontends close the record here
+    f.go_online()
+    b.wait_for_item("off-1")
+    b.wait_for_item("off-2")
+    b.wait_for_state("seed", "active")
+
+
+def offline_edits_flush_while_backgrounded(f):  # R12
+    # the same, but the device is backgrounded (foreground sync stopped) when it
+    # reconnects, so the flush cannot rely on foreground sync being active.
+    b = f.peer()
+    name = unique("offlbg")
+    _share_and_join(f, b, name, "seed")
+    f.go_offline()
+    f.add_item("bg-1")
+    f.cycle_item("seed")  # new -> active
+    f.go_listing()
+    f.set_foreground(False)  # background: stop foreground sync
+    f.go_online()  # reconnect while backgrounded
+    b.wait_for_item("bg-1")
+    b.wait_for_state("seed", "active")
+    f.set_foreground(True)  # restore for a clean teardown
+
+
 def member_can_rename(f):  # rename by a member
     b = f.peer()
     name = unique("mrename")
@@ -219,6 +398,15 @@ COLLAB = [
     ("edits_converge_both_ways", edits_converge_both_ways),
     ("last_writer_wins", last_writer_wins),
     ("member_reorder_converges", member_reorder_converges),
+    ("member_state_change_converges", member_state_change_converges),
+    ("member_item_rename_converges", member_item_rename_converges),
+    ("concurrent_member_edits_converge", concurrent_member_edits_converge),
+    ("offline_edit_reaches_peer_after_reconnect", offline_edit_reaches_peer_after_reconnect),
+    ("live_view_reconciles_missed_edits", live_view_reconciles_missed_edits),
+    ("peer_offline_misses_edit_then_reconnects", peer_offline_misses_edit_then_reconnects),
+    ("offline_multi_edits_reach_peer_after_reconnect", offline_multi_edits_reach_peer_after_reconnect),
+    ("offline_edits_flush_on_reconnect", offline_edits_flush_on_reconnect),
+    ("offline_edits_flush_while_backgrounded", offline_edits_flush_while_backgrounded),
     ("member_can_rename", member_can_rename),
     ("rename_reaches_listing", rename_reaches_listing),
     ("reorder_while_closed_syncs_on_reopen", reorder_while_closed_syncs_on_reopen),

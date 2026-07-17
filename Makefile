@@ -53,11 +53,15 @@ fmt-check:
 test:
 	$(FLUTTER) test
 
-# browser e2e: the web build boots in the system chrome and the shared
-# compliance flows run against a real veilid-in-wasm node. this is the web column
-# of the compliance matrix; the full cross-platform sweep is `make test-compliance`.
+# end-to-end (default target is android, the most faithful true e2e): the shared
+# compliance flows run against the real veilid dht through the real app on two
+# emulators (alice + bob), driven as a user would, with OS-level network and
+# backgrounding control via adb (airplane-mode, HOME) and no in-app test backdoor.
+# needs the emulator toolchain once (`make android-e2e-setup`). the full
+# cross-platform sweep is `make test-compliance`; a single lighter column is e.g.
+# `make test-compliance PLATFORMS=linux` (fast desktop, no emulator) or `=web`.
 test-e2e:
-	test/scripts/matrix_run.sh web
+	test/scripts/matrix_run.sh android
 
 precommit: fmt-check analyze test
 

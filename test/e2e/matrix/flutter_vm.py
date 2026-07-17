@@ -169,6 +169,14 @@ def get_text(drv, finder, timeout=DEFAULT_TIMEOUT_MS):
     return drv.command(_with(finder, command="get_text", timeout=timeout)).get("text")
 
 
+def request_data(drv, message, timeout=DEFAULT_TIMEOUT_MS):
+    """send a string to the app's driver DataHandler (test/driver/app.dart) and
+    return its reply. the app's e2e control channel (offline/online/etc.)."""
+    return drv.command(
+        {"command": "request_data", "message": message, "timeout": timeout}
+    ).get("message")
+
+
 def scroll(drv, finder, dx, dy, duration_ms=1500, frequency=30, timeout=DEFAULT_TIMEOUT_MS):
     drv.command(
         _with(

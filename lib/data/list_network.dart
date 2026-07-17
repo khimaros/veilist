@@ -198,22 +198,35 @@ class VeilidListNetwork implements ListNetwork {
 
   @override
   Stream<DocChange> get changes =>
-      _service.valueChanges.expand((u) => _toChanges(u));
+      _service.valueChanges.asyncExpand(_toChanges);
 
-  // a value-change update carries the changed subkey(s) and new data; map the
-  // subkey back to a member index (only the first subkey of each range is used
-  // in v1).
-  Iterable<DocChange> _toChanges(VeilidUpdateValueChange u) sync* {
-    final data = u.value?.data;
-    if (data == null) return;
+  // map a watch update to per-member doc changes. veilid includes the changed
+  // value inline only for a single-subkey change; when it coalesces several
+  // subkeys changed within one flush window (two members editing at once) it
+  // sends no inline value and expects the reader to re-read the range. fetch
+  // those subkeys ourselves rather than dropping the update - dropping it left a
+  // concurrent edit invisible until veilid's ~30s fallback inspection.
+  Stream<DocChange> _toChanges(VeilidUpdateValueChange u) async* {
+    final key = u.key;
+    final inline = u.value?.data;
     for (final range in u.subkeys) {
       for (var sk = range.low; sk <= range.high; sk++) {
         if (sk % kSubkeysPerMember != 0) continue;
-        yield (
-          recordKey: u.key.toString(),
-          memberIndex: sk ~/ kSubkeysPerMember,
-          json: utf8.decode(data),
-        );
+        var data = inline;
+        if (data == null) {
+          try {
+            data = (await _rc.getDHTValue(key, sk, forceRefresh: true))?.data;
+          } on VeilidAPIExceptionTryAgain {
+            // transient; retried on the next update or a periodic refresh.
+          }
+        }
+        if (data != null) {
+          yield (
+            recordKey: key.toString(),
+            memberIndex: sk ~/ kSubkeysPerMember,
+            json: utf8.decode(data),
+          );
+        }
       }
     }
   }

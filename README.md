@@ -53,12 +53,12 @@ make wasm         # compiles the veilid wasm blob into web/wasm/
 
 ```
 make test           # dart unit + widget tests (fast, hermetic)
-make test-e2e       # browser e2e: real veilid-in-wasm in chrome (python)
-make test-ui-e2e    # true ui e2e: the real app on an android emulator (appium)
-make test-ui-e2e-two # two emulators: live collaboration over the dht
+make test-e2e       # e2e: compliance flows on two android emulators over the real dht
+make test-compliance PLATFORMS=linux  # same flows, faster desktop column (no emulator)
+make test-compliance PLATFORMS=web    # web column (veilid-in-wasm in chrome)
 ```
 
-the two android targets need a one-time `make android-e2e-setup`. see
+`make test-e2e` (android) needs a one-time `make android-e2e-setup`. see
 [CONTRIBUTING.md](CONTRIBUTING.md) for the test layers and the emulator setup.
 
 see [CONTRIBUTING.md](CONTRIBUTING.md) for the full developer workflow and

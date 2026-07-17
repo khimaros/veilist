@@ -4,8 +4,10 @@
 // (a reorder synced peer-to-peer but not to a client that was closed at the
 // time and cold-starts on reopen).
 
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:veilist/data/dht_layout.dart';
 import 'package:veilist/data/list_network.dart';
@@ -121,4 +123,52 @@ void main() {
       open.dispose();
     },
   );
+
+  test('a live view reconciles a change whose watch update was dropped', () {
+    // the watch is the fast path but the network can silently drop a
+    // notification (a coalesced value change, or a peer's post-offline flush an
+    // online viewer misses). the background reconcile must still pull it in;
+    // without it a live view strands an edit behind forever. FakeDht's
+    // dropNextChanges injects exactly that lost notification. fakeAsync drives
+    // the periodic reconcile timer without real waiting.
+    fakeAsync((async) {
+      final dht = FakeDht();
+      final rec = dht.createRecord();
+      // member 0 created item x; the viewer (member 1) opens and live-syncs.
+      writeMember(
+        dht,
+        rec.recordKey,
+        0,
+        Contribution()..addItem('x', 'hello', const LogicalTs(1, 0)),
+      );
+      final open = openAs(dht, rec, member: 1);
+      unawaited(open.open());
+      async.flushMicrotasks();
+      expect(open.items.map((i) => i.text), ['hello']);
+
+      // member 0 renames x, but the network loses the watch notification.
+      dht.dropNextChanges(1);
+      writeMember(
+        dht,
+        rec.recordKey,
+        0,
+        Contribution()..addItem('x', 'world', const LogicalTs(2, 0)),
+      );
+      async.elapse(const Duration(seconds: 2));
+      expect(
+        open.items.map((i) => i.text),
+        ['hello'],
+        reason: 'the dropped notification leaves the view momentarily stale',
+      );
+
+      // the background reconcile must catch it within a few ticks.
+      async.elapse(const Duration(seconds: 15));
+      expect(
+        open.items.map((i) => i.text),
+        ['world'],
+        reason: 'reconcile pulls in a change the watch dropped',
+      );
+      open.dispose();
+    });
+  });
 }

@@ -252,6 +252,122 @@ on a canvas-rendered ui everywhere. `make test-compliance`.
       `test/e2e/{matrix,appium}`, the driver entrypoint to `test/driver/app.dart`,
       and the test scripts to `test/scripts/` (build scripts stay in `scripts/`)
 
+## phase 13 - live state/rename sync
+
+- [x] BUG: concurrent edits by two members did not propagate live. veilid
+      coalesces subkey changes made within one ~1s flush window into a single
+      value-change that carries no inline value (it expects a re-read);
+      `VeilidListNetwork._toChanges` dropped those, so a peer's edit was invisible
+      until veilid's ~30s fallback inspection - felt as "marking an item active
+      did not reach the other party, but a reorder (done while only one side
+      wrote) did". fixed: `_toChanges` now fetches the changed subkeys via
+      `getDHTValue` when the notification has no inline value. found and locked in
+      with real-veilid matrix flows: `member_state_change_converges` (R7),
+      `member_item_rename_converges` (R11), and `concurrent_member_edits_converge`
+      (fires both members' writes simultaneously so they coalesce), plus an
+      `item_state` observable across every frontend (web reads the folded state
+      via the hook; the widget frontends read the checkbox glyph via the driver).
+      the concurrent flow failed ~50% of runs before the fix and 0/many after;
+      full linux matrix green.
+- note: the web frontend could not reproduce this - its `window.veilistTest`
+      hook awaits each write, serializing them so they never coalesce - so
+      `make test-e2e` now runs the true-ui linux column instead of the web column.
+
+## phase 14 - offline write durability
+
+- [x] a device with pending offline edits must keep trying to sync them until
+      fully flushed, on any screen and while backgrounded. finding: no app bug -
+      veilid's offline_subkey_writes task flushes queued writes for every record
+      with pending writes whenever the node is online, the app never shuts the
+      node down, and on reconnect the node reattaches in ~6s and clears pending
+      writes (probed via the sync chip on linux). the OS-level android flow
+      `offline_edits_flush_while_backgrounded` PASSES: real airplane-mode network
+      loss + HOME backgrounding, edits still flush to a peer on reconnect.
+- [x] harness: `VeilidService.setOnline` (detach/attach) exposed via the web hook
+      and a flutter-driver requestData handler (test/driver/app.dart) for
+      linux/web; android uses OS-level adb (airplane-mode, HOME) instead - no
+      in-app backdoor. flows `offline_edits_flush_on_reconnect` (listing) and
+      `..._while_backgrounded`.
+- note: detach/attach is an UNFAITHFUL offline primitive - it fully drops the
+      node so `attach()` triggers a slow re-bootstrap and a peer misses the last
+      edit within the window (the node itself recovers fine). OS-level network
+      loss (android airplane-mode, phase 15) is the faithful test; the linux/web
+      detach/attach flows are kept only as a rough proxy.
+- [ ] `offline_edits_flush_on_reconnect` is flaky on android (the peer sometimes
+      misses the final rapid offline edit within 120s while the backgrounded
+      variant passes). harden: after go_offline, confirm the node is actually
+      offline before editing (so every edit is truly queued), settle after the
+      airplane toggle, and widen the converge wait. then re-run.
+- [ ] optional UX: surface "N changes still syncing" on the listing (R13 today
+      only covers the open detail page).
+
+## phase 15 - android as the default e2e target (next big task)
+
+pivot the compliance matrix's default e2e target to android and make it as pure a
+true end-to-end test as possible: drive the app through fundamental OS/user
+primitives with as little awareness of the app internals as possible, so a run
+exercises exactly what a real device does. android's emulator/vm makes this the
+most practical target (linux/web should follow the same principle where they can;
+web stays hook-driven because its canvas has no dom).
+
+- [x] first android matrix run on this laptop works end to end: APK build (~70s),
+      alice+bob boot, install, appium, and the flows run - `created_lists`,
+      `add_and_cycle_item_state`, and the collab `edits_converge_both_ways` all
+      pass over the live dht. measured RAM: ~3.6-3.7 GB rss per emulator, ~7.3 GB
+      for the pair, with 16+ GB free under load (60 GB total) - ample headroom.
+- [x] OS-level primitives implemented on android (no in-app backdoor): go_offline
+      /go_online via adb `cmd connectivity airplane-mode`, set_foreground via adb
+      `input keyevent KEYCODE_HOME` / `am start`. the backgrounded offline flow
+      passes with these.
+- [x] make android the default `make test-e2e` (`matrix_run.sh android`); linux
+      and web stay as lighter columns via `make test-compliance PLATFORMS=...`.
+      docs updated (Makefile, CONTRIBUTING).
+- [ ] carry the "no in-app backdoor" principle further and stabilize the offline
+      listing flow (see phase 14).
+- [ ] keep the driver requestData control channel (VeilidService.setOnline /
+      foreground toggle) for linux + web only, until they gain OS-level
+      equivalents (linux: real window backgrounding + a network namespace cut).
+- [ ] the offline-sync flows (phase 14) then run on android over real OS network
+      loss, closing the gap that on android the detach/attach toggle is stubbed.
+
+## phase 16 - failure-injecting veilid-fake for deterministic tests
+
+the public dht drops a watch update to an online viewer only stochastically
+(~10-25%) and self-heals an offline node on reconnect (change-inspection), so
+some failure modes cannot be reproduced on demand. rather than stand up a real
+private veilid cluster, grow the in-process fake (`test/fakes/fake_backend.dart`)
+into a controllable veilid-fake that injects failures deterministically. the
+real-veilid compliance matrix still runs for real-network confidence; the fake is
+for pinning specific failure modes.
+
+- [x] dropped notifications: `FakeDht.dropNextChanges(n)` writes without emitting
+      the change event, simulating watch updates the network loses. used by the
+      deterministic reconcile test (phase 17).
+- [ ] latency/jitter: delay reads/writes/change delivery by a configurable amount.
+- [ ] partitions: isolate one actor's network view from the shared dht for a
+      window, then heal.
+- [ ] reordering/duplication of change events.
+- [ ] optionally drive a fake-backed app build through the compliance matrix (a
+      dart-define swaps `VeilidListNetwork` for the fake) so ui-level flows can hit
+      injected failures too, not just the dart unit layer.
+
+## phase 17 - live view reconcile (done)
+
+- [x] BUG (root cause): `OpenList` stopped re-reading once `_liveSynced`, relying
+      solely on the watch; the watch can silently drop an update (a coalesced
+      value change, or a peer's post-offline flush the online viewer misses
+      ~10-25% of the time), stranding the view an edit behind forever. veilid
+      self-heals a node that itself went offline (change-inspection on reconnect),
+      but not an online viewer that dropped a notification. fixed: `_tick` keeps a
+      slow background reconcile after live-sync (`_kReconcileEveryTicks`), and
+      `_resyncIfReconnected` re-reads on every not-ready->ready edge, not only
+      before the first live sync.
+- [x] deterministic test (`open_list_sync_test.dart`, veilid-fake +
+      `fake_async`): drop a peer's watch update, advance virtual time, assert the
+      reconcile recovers it. fails 100% on the pre-fix `_tick`, passes with the
+      fix. all 41 dart unit/widget tests + analyze green. the real-veilid e2e
+      flows (kept) give high-probability real-network coverage on top.
+
 ## dependency maintenance
 
 - [x] bump app_links to 7.x (only direct dep with a newer resolvable version;

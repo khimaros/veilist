@@ -189,6 +189,14 @@ retries. so `OpenList` resyncs when `ListNetwork.readiness` fires (the node
 reconnected) and its periodic tick keeps calling `refresh()` until the first
 live read lands.
 
+a live watch update usually carries the changed member's new doc inline, but
+veilid coalesces several subkey changes made within one flush window (two members
+editing at once) into a single value-change with no inline value, expecting the
+reader to re-read. `VeilidListNetwork.changes` fetches the changed subkeys in
+that case rather than dropping the update; dropping it left a concurrent edit
+(e.g. one member marking an item active while another edited) invisible until
+veilid's ~30s fallback change-inspection.
+
 the same staleness applies to lists you have not opened. while the app is
 foregrounded, `ListRepository` keeps one watch per roster list (via
 `startForegroundSync`): a change marks a list dirty and the repository re-reads

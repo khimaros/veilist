@@ -108,6 +108,18 @@ class VeilidService extends ChangeNotifier {
     }
   }
 
+  /// detach from or re-attach to the network. used by the e2e harness to
+  /// simulate a device going offline and back so tests can prove that edits made
+  /// while detached flush once re-attached. the node stays initialized; only its
+  /// network attachment toggles.
+  Future<void> setOnline(bool online) async {
+    try {
+      await (online ? Veilid.instance.attach() : Veilid.instance.detach());
+    } on VeilidAPIException {
+      // already in the requested attachment state; nothing to do.
+    }
+  }
+
   Future<void> shutdown() async {
     await _sub?.cancel();
     _sub = null;

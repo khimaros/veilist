@@ -17,6 +17,10 @@ import 'veilid/veilid_service.dart';
 // only true for e2e builds (--dart-define=VEILIST_E2E=1); gates the test hook.
 const bool _e2e = bool.fromEnvironment('VEILIST_E2E');
 
+/// the running repository, exposed only so the driver e2e command handler (see
+/// test/driver/app.dart) can drive foreground-sync on/off. null in normal runs.
+ListRepository? e2eRepository;
+
 // fallback accent when the platform has no dynamic color; matches the gnome/
 // libadwaita default "blue" accent (#3584e4).
 const Color _seed = Color(0xFF3584E4);
@@ -82,6 +86,10 @@ class _VeilistAppState extends State<VeilistApp> with WidgetsBindingObserver {
     // install the e2e hook before any await, so it exists by the time the
     // browser test observes veilid reach 'ready' (which arrives asynchronously).
     if (_e2e) installTestHook(widget.repository);
+    // only read by the driver e2e command handler (test/driver/app.dart), which
+    // is absent from production builds; harmless to set unconditionally, and the
+    // widget driver builds do not define VEILIST_E2E.
+    e2eRepository = widget.repository;
     await widget.service.startup();
     if (widget.service.phase == VeilidPhase.error) return;
     try {

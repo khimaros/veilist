@@ -53,19 +53,31 @@ three layers, fastest first:
   edit, reorder, swipe-delete, the share dialog (qr + both links), open-link
   validation, and delete from the listing. the driven build uses
   `test/driver/app.dart`; see the two-device section below for setup.
-- **browser e2e** (the compliance matrix's web frontend, run with
-  `make test-e2e`): builds the web app with the `window.veilistTest` hook
-  (`--dart-define=VEILIST_E2E=true`), serves it, and drives the system chrome. it
-  confirms a real veilid node starts and attaches to the public dht inside the
-  browser (R3, R8) and runs the shared compliance flows - including live
-  alice/bob convergence across two browser contexts over the real network.
-  `make test-e2e` is exactly the web column of the matrix, so
-  `make test-compliance PLATFORMS=web` runs the same thing. unlike the hermetic
-  dart suite, the collaboration flows need the public dht to converge.
+- **android e2e** (the default `make test-e2e`, the compliance matrix's android
+  column): drives the real app on two emulators (alice + bob) via appium
+  flutter-driver - real taps, text, drag-reorder, swipe-delete - plus OS-level
+  control via adb (airplane-mode for network loss, HOME for backgrounding) with no
+  in-app test backdoor. it runs the shared compliance flows including live
+  two-device convergence over the real dht. the most faithful true e2e; needs the
+  emulator toolchain once (`make android-e2e-setup`). the pair of emulators is
+  ~7 GB rss.
+- **linux e2e** (the matrix's linux column, `make test-compliance PLATFORMS=linux`):
+  the same flows through the profile desktop app over the dart vm service, real
+  widgets and gestures, headless under xvfb. fast (no emulator), but its network/
+  backgrounding controls use an in-app detach/attach hook rather than a real OS
+  network cut, so it is a rough proxy for the offline flows.
+- **web e2e** (the matrix's web frontend, `make test-compliance PLATFORMS=web`):
+  builds the web app with the `window.veilistTest` hook
+  (`--dart-define=VEILIST_E2E=true`), serves it, and drives the system chrome,
+  confirming a real veilid node attaches to the public dht inside the browser (R3,
+  R8). flutter web renders to a canvas with no dom to click, so this frontend
+  calls the hook rather than the ui - it exercises the network and model but not
+  real gestures, and its hook awaits each write, so it cannot reproduce
+  concurrent-edit races. needs the veilid wasm blob (`make wasm`, which requires
+  the rust toolchain and downloads a matching `wasm-bindgen-cli` on first run).
 
-`make test-e2e` needs the veilid wasm blob; it builds it (`make wasm`) if
-missing, then the web app. `make wasm` requires the rust toolchain (mise
-provides it) and downloads a matching `wasm-bindgen-cli` on first run.
+unlike the hermetic dart suite, the collaboration flows in every e2e layer need
+the public dht to converge.
 
 ### android emulator ui e2e (appium)
 

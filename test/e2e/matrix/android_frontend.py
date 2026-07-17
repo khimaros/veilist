@@ -148,6 +148,29 @@ class AndroidFrontend(WidgetFrontend):
         )
         self._await_online()
 
+    # OS-level primitives via adb, so android exercises real network loss and
+    # real backgrounding with no in-app test backdoor (unlike the driver
+    # requestData channel linux/web use). this is the point of the android pivot.
+    def _adb(self, *args):
+        subprocess.run(
+            ["adb", "-s", self._udid, *args], check=False, capture_output=True
+        )
+
+    def go_offline(self):
+        # real radio cut at the OS level; veilid must reconnect on its own.
+        self._adb("shell", "cmd", "connectivity", "airplane-mode", "enable")
+
+    def go_online(self):
+        self._adb("shell", "cmd", "connectivity", "airplane-mode", "disable")
+
+    def set_foreground(self, foreground):
+        if foreground:
+            # a real relaunch of the singleTask activity resumes the app.
+            self._adb("shell", "am", "start", "-n", f"{APP_PACKAGE}/{APP_ACTIVITY}")
+        else:
+            # HOME sends the app to the background (a real lifecycle transition).
+            self._adb("shell", "input", "keyevent", "KEYCODE_HOME")
+
     def peer(self):
         udid = os.environ.get("VEILIST_UDID_2")
         if not udid:
