@@ -8,7 +8,7 @@ abstraction.
 ## layout
 
 - `frontend.py` - the `Frontend` interface: user *actions* (create_list,
-  add_item, cycle_item, edit_item, reorder_below, rename_via_title, share,
+  add_item, toggle_item, set_item_state, edit_item, reorder_below, share,
   open_link, delete_list, ...) and *status queries* (has_item, item_order,
   title, sync_status, is_editable, ...). an action a frontend cannot perform
   raises `SkipFlow`, and the matrix records "skip" for that cell.

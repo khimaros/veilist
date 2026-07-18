@@ -28,7 +28,8 @@ uv run pytest -v
 
 - `test_smoke.py` - the app installs, launches, and appium can find a widget.
 - `test_single_device.py` - every local-first flow: track created lists (R5,
-  R12), open without an endless spinner (R12), add + cycle item state (R7), edit
+  R12), open without an endless spinner (R12), add an item, toggle it complete
+  and pick another state by holding the checkbox (R7), edit
   text, reorder, swipe-delete (R11), connection + sync status (R13), the share
   dialog with a qr and both link forms (R1), open-link validation (R2), and
   delete from the listing (R6).

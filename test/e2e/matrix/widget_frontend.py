@@ -41,17 +41,26 @@ class WidgetFrontend(Frontend):
         u.tap(d, u.key("add_button"))
         u.wait_for(d, u.text(text))
 
-    def cycle_item(self, text):
+    def toggle_item(self, text):
         u, d = self.ui, self.d
         u.tap(d, u.in_tile(text, "StateGlyphButton"))
         u.settle(d, 0.5)
 
-    def cycle_item_nowait(self, text):
+    def set_item_state(self, text, state):
+        # press and hold the checkbox, then pick the state from the dialog.
+        u, d = self.ui, self.d
+        u.long_press(d, u.in_tile(text, "StateGlyphButton"))
+        u.wait_for(d, u.key("state_picker"))
+        u.tap(d, u.key(f"state_{state}"))
+        u.wait_absent(d, u.key("state_picker"))
+        u.settle(d, 0.5)
+
+    def toggle_item_nowait(self, text):
         # tap the checkbox but skip the settle, so a second member's tap follows
         # immediately and both writes land in one storage-node flush window.
         self.ui.tap(self.d, self.ui.in_tile(text, "StateGlyphButton"))
 
-    def cycle_with_peer(self, peer, my_text, peer_text):
+    def toggle_with_peer(self, peer, my_text, peer_text):
         # a driver tap blocks the caller for its round-trip, so back-to-back taps
         # are tens of ms apart - enough to sometimes straddle the 1s flush window.
         # each frontend has its own driver connection, so tap both in parallel
@@ -59,8 +68,8 @@ class WidgetFrontend(Frontend):
         import threading
 
         workers = [
-            threading.Thread(target=lambda: self.cycle_item_nowait(my_text)),
-            threading.Thread(target=lambda: peer.cycle_item_nowait(peer_text)),
+            threading.Thread(target=lambda: self.toggle_item_nowait(my_text)),
+            threading.Thread(target=lambda: peer.toggle_item_nowait(peer_text)),
         ]
         for w in workers:
             w.start()
@@ -145,6 +154,17 @@ class WidgetFrontend(Frontend):
         u.wait_for(d, u.key("add_field"), OPEN_MS)
         return True
 
+    def scanner_opens(self):
+        u, d = self.ui, self.d
+        # platforms without a camera hide the button entirely (desktop), so an
+        # absent button is a skip, not a failure.
+        if not self._present(u.key("scan_link_button"), 2500):
+            raise SkipFlow("no camera scanner on this platform")
+        u.tap(d, u.key("scan_link_button"))
+        opened = self._present(u.key("scan_page"), OPEN_MS)
+        self.go_listing()
+        return opened
+
     def delete_list(self, name):
         u, d = self.ui, self.d
         menu = u.descendant(
@@ -178,7 +198,13 @@ class WidgetFrontend(Frontend):
 
     # glyph rendered by StateGlyphButton -> wire code (see ItemState). "new"
     # renders an empty glyph, so an empty string maps back to it.
-    _GLYPH_STATE = {"": "new", " ": "new", "@": "active", "x": "complete"}
+    _GLYPH_STATE = {
+        "": "new",
+        " ": "new",
+        "@": "active",
+        "x": "complete",
+        "!": "blocked",
+    }
 
     def item_state(self, text):
         u, d = self.ui, self.d

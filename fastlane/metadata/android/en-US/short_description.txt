@@ -1,0 +1,1 @@
+shared lists over the veilid network, with no server in the middle

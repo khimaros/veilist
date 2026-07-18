@@ -3,33 +3,26 @@ import 'package:veilist/models/item_state.dart';
 
 void main() {
   group('ItemState', () {
-    test('v1 checkbox cycle goes new -> active -> complete -> new', () {
-      expect(
-        ItemState.unstarted.cycleNext(among: ItemState.v1Cycle),
+    test('a tap toggles between open and complete', () {
+      expect(ItemState.unstarted.toggled, ItemState.complete);
+      expect(ItemState.complete.toggled, ItemState.unstarted);
+    });
+
+    test('a tap completes any other state in one step', () {
+      // reaching those states needs the picker, so a tap must not walk a cycle
+      // through them - it ticks the item off like any other.
+      for (final state in [ItemState.active, ItemState.blocked]) {
+        expect(state.toggled, ItemState.complete);
+      }
+    });
+
+    test('the picker offers the shipped states in canonical order', () {
+      expect(ItemState.selectable, [
+        ItemState.unstarted,
         ItemState.active,
-      );
-      expect(
-        ItemState.active.cycleNext(among: ItemState.v1Cycle),
         ItemState.complete,
-      );
-      expect(
-        ItemState.complete.cycleNext(among: ItemState.v1Cycle),
-        ItemState.unstarted,
-      );
-    });
-
-    test('full cycle follows canonical order and wraps', () {
-      expect(ItemState.unstarted.cycleNext(), ItemState.active);
-      expect(ItemState.deferred.cycleNext(), ItemState.unstarted);
-    });
-
-    test('a state outside the active subset restarts that subset', () {
-      // a peer set `blocked` while our ui only cycles todo/done; clicking should
-      // not get stuck on a state the subset does not contain.
-      expect(
-        ItemState.blocked.cycleNext(among: ItemState.v1Cycle),
-        ItemState.unstarted,
-      );
+        ItemState.blocked,
+      ]);
     });
 
     test('code roundtrips and is stable for the wire format', () {

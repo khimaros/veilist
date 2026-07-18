@@ -56,6 +56,12 @@ class _VeilistAppState extends State<VeilistApp> with WidgetsBindingObserver {
     navigatorKey: _navigatorKey,
   );
 
+  // while true, a loading screen covers the app. it starts up during boot so a
+  // launch link opens straight into the list (no listing flashing behind it); a
+  // normal launch drops it as soon as boot finds no launch link.
+  bool _launching = true;
+  bool _openingSharedList = false;
+
   @override
   void initState() {
     super.initState();
@@ -90,17 +96,41 @@ class _VeilistAppState extends State<VeilistApp> with WidgetsBindingObserver {
     // is absent from production builds; harmless to set unconditionally, and the
     // widget driver builds do not define VEILIST_E2E.
     e2eRepository = widget.repository;
-    await widget.service.startup();
-    if (widget.service.phase == VeilidPhase.error) return;
-    try {
-      await widget.repository.load();
-    } catch (_) {
-      // table store unavailable; the listing simply starts empty.
+
+    // resolve a launch link before anything else. a launch link keeps the
+    // loading screen up so the list opens without the listing flashing behind
+    // it; a normal launch drops it right away and shows the listing while the
+    // node connects (local-first).
+    final launch = await _linkHandler.initialLink();
+    if (mounted) {
+      setState(() {
+        _openingSharedList = launch != null;
+        _launching = launch != null;
+      });
     }
-    await _linkHandler.start();
+
+    await widget.service.startup();
+    final started = widget.service.phase != VeilidPhase.error;
+    if (started) {
+      try {
+        await widget.repository.load();
+      } catch (_) {
+        // table store unavailable; the listing simply starts empty.
+      }
+      _linkHandler.listen();
+    }
+
+    // open a launch link even if the node failed to start: joinList tolerates
+    // being offline, so a deep link never strands the user on the loading
+    // screen (the detail page then shows its own offline/sync state).
+    if (launch != null) {
+      await _linkHandler.open(launch, animate: false);
+      if (mounted) setState(() => _launching = false);
+    }
+
     // the app launches foregrounded, but no lifecycle event fires for that
     // initial state, so kick off foreground sync here.
-    unawaited(widget.repository.startForegroundSync());
+    if (started) unawaited(widget.repository.startForegroundSync());
   }
 
   @override
@@ -121,8 +151,46 @@ class _VeilistAppState extends State<VeilistApp> with WidgetsBindingObserver {
           theme: ThemeData(colorScheme: light, useMaterial3: true),
           darkTheme: ThemeData(colorScheme: dark, useMaterial3: true),
           home: ListingPage(repository: widget.repository),
+          // a launch link is opened behind this cover, then it is removed to
+          // reveal the list - so the listing never flashes in between.
+          builder: (context, child) => Stack(
+            children: [
+              ?child,
+              if (_launching)
+                Positioned.fill(
+                  child: _LoadingScreen(openingSharedList: _openingSharedList),
+                ),
+            ],
+          ),
         );
       },
+    );
+  }
+}
+
+// covers the app during boot and while a launch link is being opened, so the
+// listing never flashes behind an incoming shared list (R2).
+class _LoadingScreen extends StatelessWidget {
+  const _LoadingScreen({required this.openingSharedList});
+
+  final bool openingSharedList;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(),
+            if (openingSharedList) ...[
+              const SizedBox(height: 16),
+              const Text('opening the shared list...'),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }

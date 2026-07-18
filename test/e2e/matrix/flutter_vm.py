@@ -191,6 +191,13 @@ def scroll(drv, finder, dx, dy, duration_ms=1500, frequency=30, timeout=DEFAULT_
     )
 
 
+def long_press(drv, finder, duration_ms=1000, timeout=DEFAULT_TIMEOUT_MS):
+    """press and hold. flutter_driver has no long-press command, so hold the
+    pointer still for the duration via a zero-delta scroll - exactly what the
+    appium flutter driver's longTap does, so both adapters behave the same."""
+    scroll(drv, finder, dx=0, dy=0, duration_ms=duration_ms, timeout=timeout)
+
+
 def offset(drv, finder, kind="center", timeout=DEFAULT_TIMEOUT_MS):
     """a widget's screen coordinates. uses render geometry (localToGlobal), so
     unlike the diagnostics tree it works in profile/release builds too."""

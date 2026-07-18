@@ -91,11 +91,11 @@ class OpenList extends ChangeNotifier {
         local.recordKey,
         writer: local.writer,
       );
-      final raw = await _net.readDocs(local.recordKey, _memberCount);
-      raw.forEach((i, json) => _docs[i] = _decode(json));
+      final read = await _net.readDocs(local.recordKey, _memberCount);
+      read.docs.forEach((i, json) => _docs[i] = _decode(json));
       // cached data (a list synced before) means we can show it and allow edits
       // immediately; a first-ever join with nothing cached waits for the sync.
-      if (raw.isNotEmpty) _loadedFromCache = true;
+      if (read.docs.isNotEmpty) _loadedFromCache = true;
       _changeSub = _net.changes
           .where((c) => c.recordKey == local.recordKey)
           .listen(_onRemoteChange);
@@ -183,23 +183,28 @@ class OpenList extends ChangeNotifier {
   /// used to pull writes that landed before this device was watching (e.g. a
   /// peer wrote while offline to us, so no change event arrives).
   Future<void> refresh() async {
-    final raw = await _net.readDocs(
+    final read = await _net.readDocs(
       local.recordKey,
       _memberCount,
       forceRefresh: true,
     );
-    raw.forEach((i, json) {
+    read.docs.forEach((i, json) {
       // we are the sole authority for our own slot; a network read must not
       // clobber our in-memory contribution, which may hold an edit that has not
       // been flushed yet (e.g. a rename racing the open-time refresh).
       if (i == local.memberIndex) return;
       _docs[i] = _decode(json);
     });
-    if (raw.isNotEmpty) _loadedFromCache = true;
     _refold();
-    // a network read completed: the list is now synchronized and (if joined)
-    // editable.
-    if (_net.isReady) _liveSynced = true;
+    // only a read that got EVERY member's subkey means the list is whole. a
+    // partial read is a fragment - the remaining members' docs land over the
+    // next few reads and visibly rewrite the list - so claiming "synced" here
+    // would be a lie, and would drop a first-ever join's spinner onto a
+    // half-built list.
+    if (read.complete) {
+      _loadedFromCache = true;
+      if (_net.isReady) _liveSynced = true;
+    }
     notifyListeners();
     unawaited(_updateSync());
   }
@@ -221,25 +226,21 @@ class OpenList extends ChangeNotifier {
     await _flush();
   }
 
-  Future<void> cycleState(String id) async {
+  /// a plain checkbox tap: complete an item, or re-open a completed one.
+  Future<void> toggleState(String id) => setItemState(id, _stateOf(id).toggled);
+
+  /// set an item's state outright, from the press-and-hold picker.
+  Future<void> setItemState(String id, ItemState state) async {
     if (!canEdit) return;
-    final current = _items
-        .firstWhere(
-          (i) => i.id == id,
-          orElse: () => const ListItem(
-            id: '',
-            text: '',
-            state: ItemState.unstarted,
-            order: 0,
-          ),
-        )
-        .state;
-    _mine.contribution.setState(
-      id,
-      current.cycleNext(among: ItemState.v1Cycle),
-      _now(),
-    );
+    _mine.contribution.setState(id, state, _now());
     await _flush();
+  }
+
+  ItemState _stateOf(String id) {
+    for (final item in _items) {
+      if (item.id == id) return item.state;
+    }
+    return ItemState.unstarted;
   }
 
   Future<void> setText(String id, String text) async {

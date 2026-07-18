@@ -86,14 +86,14 @@ void main() {
     await settle();
     expect(bobOpen.items.map((i) => i.text), contains('pack bags'));
 
-    // bob advances the item's state (new -> active); alice sees the change.
-    await bobOpen.cycleState(bobOpen.items.first.id);
+    // bob ticks the item off; alice sees the change.
+    await bobOpen.toggleState(bobOpen.items.first.id);
     await settle();
-    expect(aliceOpen.items.single.state, ItemState.active);
+    expect(aliceOpen.items.single.state, ItemState.complete);
 
     // both actors converged to the same single item in the same state.
     expect(aliceOpen.items.length, bobOpen.items.length);
-    expect(bobOpen.items.single.state, ItemState.active);
+    expect(bobOpen.items.single.state, ItemState.complete);
 
     aliceOpen.dispose();
     bobOpen.dispose();
@@ -186,9 +186,10 @@ void main() {
       await settle();
       final id = b.items.single.id;
 
-      // alice renames the item while bob advances its state, independently.
+      // alice renames the item while bob marks it blocked from the state
+      // picker, independently.
       await a.setText(id, 'carry-on');
-      await b.cycleState(id);
+      await b.setItemState(id, ItemState.blocked);
       await settle();
 
       // per-field last-writer-wins: alice's text and bob's state each win their
@@ -196,7 +197,7 @@ void main() {
       for (final open in [a, b]) {
         final item = open.items.single;
         expect(item.text, 'carry-on');
-        expect(item.state, ItemState.active);
+        expect(item.state, ItemState.blocked);
       }
 
       a.dispose();

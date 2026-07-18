@@ -5,6 +5,7 @@ import 'dart:js_interop_unsafe';
 import '../data/list_repository.dart';
 import '../data/open_list.dart';
 import '../data/share_link.dart';
+import '../models/item_state.dart';
 import '../veilid/veilid_service.dart';
 
 /// exposes `window.veilistTest` with async list operations, each returning a
@@ -49,9 +50,19 @@ void installTestHook(ListRepository repo) {
     return 'ok'.toJS;
   })().toJS;
 
-  JSPromise<JSString> cycle(JSString recordKey, JSString id) => (() async {
+  JSPromise<JSString> toggle(JSString recordKey, JSString id) => (() async {
     final opened = await ensureOpen(recordKey.toDart);
-    await opened.cycleState(id.toDart);
+    await opened.toggleState(id.toDart);
+    return 'ok'.toJS;
+  })().toJS;
+
+  JSPromise<JSString> setItemState(
+    JSString recordKey,
+    JSString id,
+    JSString code,
+  ) => (() async {
+    final opened = await ensureOpen(recordKey.toDart);
+    await opened.setItemState(id.toDart, ItemState.fromCode(code.toDart));
     return 'ok'.toJS;
   })().toJS;
 
@@ -147,7 +158,8 @@ void installTestHook(ListRepository repo) {
   hook.setProperty('share'.toJS, share.toJS);
   hook.setProperty('join'.toJS, join.toJS);
   hook.setProperty('add'.toJS, add.toJS);
-  hook.setProperty('cycle'.toJS, cycle.toJS);
+  hook.setProperty('toggle'.toJS, toggle.toJS);
+  hook.setProperty('setItemState'.toJS, setItemState.toJS);
   hook.setProperty('removeItem'.toJS, removeItem.toJS);
   hook.setProperty('setText'.toJS, setText.toJS);
   hook.setProperty('reorder'.toJS, reorder.toJS);

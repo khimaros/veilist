@@ -16,10 +16,16 @@ next, and [REQUIREMENTS.md](REQUIREMENTS.md) for the product requirements.
 
 - keep a list of every list you have made or opened from someone else
 - open, share, or delete any list from the listing page
-- check items off - the checkbox cycles through item states (new, active, and
-  complete today; more states later)
+- check items off - tapping the checkbox marks an item complete, and tapping it
+  again re-opens it
+- press and hold an item to pick another state: active or blocked (the rest of
+  the notation - obsolete, undecided, deferred - comes later)
+- join a list by scanning its qr code with the camera, instead of pasting the
+  link (android and ios; in a browser wherever the page is served over https)
 - collaborate: anyone you share with can edit, and edits are attributable to
   the person who made them
+- opening a shared link shows a loading screen and goes straight into the list,
+  instead of flashing the listing first
 - a list you open from someone else stays read-only ("syncing") until its first
   data arrives, so you never edit an empty copy that the real list overwrites;
   once it has synced, it re-opens instantly and is editable while it refreshes
@@ -61,5 +67,7 @@ make test-compliance PLATFORMS=web    # web column (veilid-in-wasm in chrome)
 `make test-e2e` (android) needs a one-time `make android-e2e-setup`. see
 [CONTRIBUTING.md](CONTRIBUTING.md) for the test layers and the emulator setup.
 
-see [CONTRIBUTING.md](CONTRIBUTING.md) for the full developer workflow and
-[DESIGN.md](DESIGN.md) for the architecture.
+see [CONTRIBUTING.md](CONTRIBUTING.md) for the full developer workflow,
+[DESIGN.md](DESIGN.md) for the architecture, and
+[DISTRIBUTION.md](DISTRIBUTION.md) for releases, app signing, and the f-droid /
+izzyondroid path.

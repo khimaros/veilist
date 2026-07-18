@@ -368,7 +368,143 @@ for pinning specific failure modes.
       fix. all 41 dart unit/widget tests + analyze green. the real-veilid e2e
       flows (kept) give high-probability real-network coverage on top.
 
+## phase 18 - link-open loading screen
+
+- [x] opening a list from a share link showed the listing (often the empty
+      state) for the whole node-startup + join window before the detail page
+      pushed, which read as the app ignoring the link. show a loading screen
+      instead: `main` resolves the launch link up front and, while the node
+      attaches and the join runs, covers the app (`MaterialApp.builder`) with a
+      spinner, then pushes the detail page with a zero-duration transition and
+      drops the cover - so a launch goes loading -> list, never flashing the
+      listing. a normal launch still shows the listing immediately while the
+      node connects (local-first), and back from the opened list still lands on
+      the listing. (R2) verified: analyze + 41 dart tests green; linux
+      compliance 28/29 (the 1 fail, `offline_edits_flush_on_reconnect`, is the
+      pre-existing phase-14 flaky offline-proxy flow - reproduced identically on
+      an unmodified HEAD tree, so it is not a regression from this change).
+
+## phase 19 - item state ux and qr scanning
+
+- [x] checkbox tap toggles open <-> complete (the common case), press-and-hold
+      (or right-click on desktop) opens a state picker for the rest; `blocked`
+      joins the shipped set (R7). `ItemState.cycleNext` is gone: a tap is
+      `toggled` and the picker offers `ItemState.selectable`. compliance flows
+      `add_and_toggle_item_state` and `pick_item_state` cover both paths, and
+      `member_state_change_converges` now exercises tap AND picker across
+      devices. the widget frontends drive the hold via a new `long_press`
+      (a zero-delta scroll, which is what appium's longTap is).
+- [x] scan a share link's qr code with the camera to join a list (R1, R2). one
+      new plugin (mobile_scanner; camera+barcode have no stdlib route), pinned to
+      the browser's own BarcodeDetector on web so nothing loads from a cdn. the
+      affordance is hidden where there is no camera (desktop), so the linux
+      column skips `scan_link_opens_camera` rather than failing. note: browsers
+      only hand out a camera on a secure origin, so the production http web
+      deployment (veilid.tech/list) cannot scan until it is served over https -
+      android is the working target, mobile web follows the origin.
+- [x] app icon redrawn in the arcticons manner: ONE uniform hairline stroke for
+      the whole glyph (was 20 for the shield and 17 for the checklist, now 8
+      everywhere - ~2.9% of the glyph's width, matching arcticons' default
+      stroke of 1 on their 48 canvas), and the contrast dropped from #ffffff on
+      #121318 to #e3e2e6 on #1b1b1f so it sits beside a themed icon pack instead
+      of shouting over it. the monochrome layer stays white for the system to
+      tint. `scripts/build_icons.sh` renders every android/ios/web png from the
+      two svgs instead of hand-exporting them (it flattens the ios set, which
+      must carry no alpha channel).
+- verified: 45 dart tests + analyze green; the changed flows pass on all three
+      columns - linux 5/5, android 4/4 (including `pick_item_state` via a real
+      appium long-press and two-emulator `member_state_change_converges`), web
+      3/3 over veilid-in-wasm. `scan_link_opens_camera` skips on linux (no
+      camera) and web (hook-driven, no gesture surface).
+
+## phase 21 - honest sync state on join
+
+- [x] the state picker was hard to hit: only the 27dp glyph box carried the
+      long-press, well under the 48dp minimum touch target, so a hold usually
+      landed on the row and did nothing. the whole row now opens the picker, and
+      the checkbox's own hit area is padded out to 48dp with the glyph unchanged.
+      covered by a widget test that holds the row's text.
+
+- [x] BUG: after joining (e.g. by scanning a qr code) the list appeared and the
+      chip read "synced", then the list kept rewriting itself for a while - it
+      looked like history replaying. it was not: the crdt keeps each member's
+      latest values, and what was arriving was one MEMBER'S DOC at a time.
+      `OpenList.refresh()` set `_liveSynced` after any read that completed while
+      the node was ready, and `readDocs` could not say the read was partial
+      (`_populatedSubkeys` silently falls back to the local view when the network
+      inspect returns TryAgain, and each subkey read swallows its own TryAgain).
+      fixed: `readDocs` returns `(docs, complete)`; only a complete read counts
+      as a live sync, and a first-ever join holds its spinner until then, so a
+      scanned link never lands on a half-built list. covered by
+      `open_list_sync_test.dart` ("a partial first read must not be reported as
+      fully synced"), which fails on the pre-fix code.
+
+## phase 20 - distribution (signing, izzyondroid, f-droid)
+
+see [DISTRIBUTION.md](DISTRIBUTION.md).
+
+- [x] persistent release signing: `android/app/build.gradle.kts` takes the key
+      from `android/key.properties` (local) or `VEILIST_KEYSTORE*` env vars (ci),
+      falling back to debug only when nothing is configured;
+      `scripts/make_release_key.sh` creates the key once; the release workflow
+      decodes it from a secret, refuses to publish a debug-signed apk, and wipes
+      it afterwards. the pre-0.3 releases were each signed by a throwaway ci
+      debug key (v0.1.0 b86a3c0e..., v0.2.0 32bc2cd8...), so they can never be
+      updated in place - 0.3.0 is a clean break, and the last one.
+- [x] the version lives only in `pubspec.yaml` (0.3.0+3000, above the legacy run
+      numbers); ci no longer injects `--build-name`/`--build-number` and instead
+      checks the tag against the pubspec, so a rebuild of a tag is identical.
+- [x] the qr scanner decodes in pure dart (`qr_code_dart_scan` over the flutter
+      camera plugin) instead of google ml kit: mobile_scanner put
+      `libbarhopper_v3.so` + tflite models - proprietary blobs - in the apk,
+      which both stores refuse. also drops ~14 MB from the fat apk. web scans a
+      captured still (the browser cannot stream frames to dart), native scans
+      live.
+- [x] the camera plugin's RECORD_AUDIO / storage permissions are stripped in the
+      app manifest, and the camera is marked not required so a camera-less device
+      can still install.
+- [x] AGP's `dependenciesInfo` blob disabled (a google-signed section no
+      rebuilder can reproduce), fastlane metadata tree added.
+- [ ] screenshots for the store listing (fastlane phoneScreenshots/); izzyondroid
+      requires them.
+- [ ] apk size vs izzyondroid's ~30 MB guidance. measured on the arm64 split:
+      v0.2.0 31.8 MB -> 34.4 MB now. dropping ml kit saved ~5 MB but the pure-dart
+      decoder and the camera plugin added more to `libapp.so` (5.5 -> 7.3 MB), and
+      `libveilid_flutter.so` (11.8 MB) plus `libflutter.so` (11.6 MB) dominate
+      regardless. levers, cheapest first: `--split-debug-info` (strips debug
+      symbols out of libapp.so; not obfuscation, so f-droid stays happy), then
+      trimming what the veilid core compiles in.
+- [ ] izzyondroid submission: app-request issue on their codeberg repodata.
+- verified: the signing path was exercised end to end with a throwaway keystore
+      (env vars -> gradle -> apksigner reports that cert, not the debug one); the
+      published manifest carries only CAMERA + the network permissions, with the
+      camera not required; the apk contains no ml kit blob and no AGP
+      dependencies blob; apk/web/linux builds, 45 dart tests and the android
+      flows `scan_link_opens_camera`, `add_and_toggle_item_state` and
+      `pick_item_state` all pass on the new decoder.
+- [ ] f-droid reproducible build: build one tag twice from different paths and
+      diff the apks; expect rust's embedded build paths to need
+      `--remap-path-prefix`. then an fdroiddata recipe with `Binaries:` +
+      `AllowedAPKSigningKeys:`.
+
 ## dependency maintenance
+
+- [x] android toolchain moved to AGP 8.9.1 + gradle 8.11.1 (was 8.7.3 + 8.9):
+      mobile_scanner's camerax 1.6.x refuses to build below AGP 8.9.1. gradle
+      stays on 8.x because rust-android-gradle 0.9.6 (veilid's plugin) uses an
+      api gradle 9 removed. apk builds green with the veilid rust core.
+- [ ] flutter 3.44 warns that support for AGP < 8.11.1 / gradle < 8.14 "will
+      soon be dropped". both are still 8.x, so the rust plugin should survive
+      the move; do it as its own change, with an apk build to confirm.
+- [ ] BUG (release signing): `android/app/build.gradle.kts` still signs release
+      builds with the debug config, and the ci runner has no debug keystore, so
+      AGP generates a throwaway one per run. proven: v0.1.0 is signed with
+      b86a3c0e..., v0.2.0 with 32bc2cd8... - different keys, so android refuses
+      to upgrade one release to the next, and a user must uninstall (losing their
+      veilid identity, the roster, and every list's writer keypair) to move
+      versions. fix: a real release keystore, held as a github actions secret and
+      wired through `android/key.properties`, falling back to the debug key for
+      local builds. the key must then outlive every release.
 
 - [x] bump app_links to 7.x (only direct dep with a newer resolvable version;
       the other stragglers are transitive and pinned by the flutter 3.44.6 sdk).

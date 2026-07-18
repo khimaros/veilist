@@ -56,26 +56,31 @@ class Frontend:
     def add_item(self, text):
         raise SkipFlow("add_item unsupported")
 
-    def cycle_item(self, text):
-        """advance one item's state one step (new -> active -> complete -> new)."""
-        raise SkipFlow("cycle_item unsupported")
+    def toggle_item(self, text):
+        """tap one item's checkbox: complete it, or re-open a completed one."""
+        raise SkipFlow("toggle_item unsupported")
 
-    def cycle_item_nowait(self, text):
-        """cycle an item's state without waiting for the network write to flush,
+    def set_item_state(self, text, state):
+        """set one item's state outright (the press-and-hold picker), given as a
+        wire code: new | active | complete | blocked."""
+        raise SkipFlow("set_item_state unsupported")
+
+    def toggle_item_nowait(self, text):
+        """toggle an item's state without waiting for the network write to flush,
         so a second member's write can overlap in the same storage-node flush
-        window (~1s). defaults to the blocking cycle_item, which already returns
+        window (~1s). defaults to the blocking toggle_item, which already returns
         before the write completes on the widget frontends (a driver tap does not
         await the async flush); the web hook awaits it, so web overrides this."""
-        self.cycle_item(text)
+        self.toggle_item(text)
 
-    def cycle_with_peer(self, peer, my_text, peer_text):
-        """this frontend cycles my_text and `peer` cycles peer_text as close to
+    def toggle_with_peer(self, peer, my_text, peer_text):
+        """this frontend toggles my_text and `peer` toggles peer_text as close to
         simultaneously as possible, so both members' subkey writes land in one
         storage-node flush window and coalesce into a single value-less watch
         notification. default fires them back-to-back; frontends whose write call
         blocks the caller (widget taps) override to run the two in parallel."""
-        self.cycle_item_nowait(my_text)
-        peer.cycle_item_nowait(peer_text)
+        self.toggle_item_nowait(my_text)
+        peer.toggle_item_nowait(peer_text)
 
     def edit_item(self, old, new):
         raise SkipFlow("edit_item unsupported")
@@ -104,6 +109,13 @@ class Frontend:
     def open_link(self, link):
         """open/join a share link; returns True if it opened a list."""
         raise SkipFlow("open_link unsupported")
+
+    def scanner_opens(self):
+        """open the qr scanner from the listing, then return to the listing.
+        True if the scanner page appeared. driving the camera itself needs a
+        real code in front of a real lens, so this covers the affordance only;
+        the decode path is covered by the dart tests."""
+        raise SkipFlow("scanner_opens unsupported")
 
     def delete_list(self, name):
         raise SkipFlow("delete_list unsupported")
@@ -142,9 +154,9 @@ class Frontend:
 
     def item_state(self, text):
         """the state of the item with this text, as its wire code: one of
-        new | active | complete (the v1 cycle; the model carries more). web
-        reads the folded state via the hook; widget frontends read the checkbox
-        glyph via the driver."""
+        new | active | complete | blocked (the shipped set; the model carries
+        more). web reads the folded state via the hook; widget frontends read
+        the checkbox glyph via the driver."""
         raise SkipFlow("item_state query unsupported")
 
     def item_order(self, texts):

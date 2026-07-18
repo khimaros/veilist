@@ -18,6 +18,14 @@ typedef DocChange = ({String recordKey, int memberIndex, String json});
 /// (the creator keeps every slot's keypair to hand out on sharing).
 typedef CreatedRecord = ({String recordKey, List<String> pool});
 
+/// the result of reading a record: the member docs this read could fetch, and
+/// whether that is everything the network holds. a read is INCOMPLETE when some
+/// member's subkey could not be fetched this time - a fresh joiner's network
+/// inspect comes back TryAgain until the record is reachable, and each subkey
+/// read can fail on its own. an incomplete read is a fragment of the list, so a
+/// reader must not present it as fully synced (see OpenList).
+typedef DocsRead = ({Map<int, String> docs, bool complete});
+
 abstract class ListNetwork {
   bool get isReady;
 
@@ -30,9 +38,10 @@ abstract class ListNetwork {
   /// open [recordKey] with [writer]; returns the schema's member count.
   Future<int> openRecord(String recordKey, {required String writer});
 
-  /// read each member's doc json (only members that have written appear). set
-  /// [forceRefresh] to pull the latest from the network rather than local.
-  Future<Map<int, String>> readDocs(
+  /// read each member's doc json (only members that have written appear), plus
+  /// whether the read got everything. set [forceRefresh] to pull the latest
+  /// from the network rather than local; only a network read can be complete.
+  Future<DocsRead> readDocs(
     String recordKey,
     int memberCount, {
     bool forceRefresh = false,
@@ -133,7 +142,7 @@ class VeilidListNetwork implements ListNetwork {
   }
 
   @override
-  Future<Map<int, String>> readDocs(
+  Future<DocsRead> readDocs(
     String recordKey,
     int memberCount, {
     bool forceRefresh = false,
@@ -144,23 +153,34 @@ class VeilidListNetwork implements ListNetwork {
     // the node is still connecting; a local inspect is non-blocking and tells us
     // which subkeys to bother reading.
     final populated = await _populatedSubkeys(key, network: forceRefresh);
+    // a local read only ever shows what this node happens to hold, so it is
+    // never the whole picture; a network read is, unless a subkey slips.
+    var complete = populated.fromNetwork;
     final docs = <int, String>{};
     for (var i = 0; i < memberCount; i++) {
       final sk = memberDataSubkey(i);
-      if (!populated.contains(sk)) continue;
+      if (!populated.subkeys.contains(sk)) continue;
       try {
         final v = await _rc.getDHTValue(key, sk, forceRefresh: forceRefresh);
-        if (v != null) docs[i] = utf8.decode(v.data);
+        if (v != null) {
+          docs[i] = utf8.decode(v.data);
+        } else {
+          complete = false; // the inspect saw a value we could not fetch
+        }
       } on VeilidAPIExceptionTryAgain {
         // transient; this subkey is retried on the next read.
+        complete = false;
       }
     }
-    return docs;
+    return (docs: docs, complete: complete);
   }
 
-  // subkeys that currently hold a value, from a non-blocking local inspect
-  // (or a network inspect when [network] and reachable, else the local view).
-  Future<Set<int>> _populatedSubkeys(
+  // subkeys that currently hold a value, from a non-blocking local inspect (or
+  // a network inspect when [network] and reachable). `fromNetwork` says which
+  // view answered: the network inspect returns TryAgain until a freshly opened
+  // record is reachable, and the local fallback only knows what this node has
+  // already fetched.
+  Future<({Set<int> subkeys, bool fromNetwork})> _populatedSubkeys(
     RecordKey key, {
     required bool network,
   }) async {
@@ -183,7 +203,7 @@ class VeilidListNetwork implements ListNetwork {
         if (j < seqs.length && seqs[j] != null) result.add(sk);
       }
     }
-    return result;
+    return (subkeys: result, fromNetwork: useNetwork);
   }
 
   @override

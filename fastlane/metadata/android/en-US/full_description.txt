@@ -1,0 +1,28 @@
+make a list, share it with a link, and everyone with the link edits it together.
+
+veilist has no server. every list lives as a record on the veilid network, and
+the devices holding the link read and write it directly, so no operator ever
+sees a list, its contents, or who is editing it. there is no account to create
+and nothing to sign in to.
+
+what it does:
+
+* keep track of every list you have made or been given
+* add, rename, reorder and delete items; tap the checkbox to tick an item off,
+  or press and hold it to mark it active or blocked
+* share a list as a link or a qr code, and join one by scanning that code
+* collaborate live: edits from everyone with the link merge as they arrive, and
+  each person's changes stay attributable to them
+* work offline first: lists are created and edited on the device straight away
+  and sync when the network comes back
+* hide completed items when a list gets long
+
+a list you create stays on your device until the first time you share it, so an
+unshared list never touches the network at all.
+
+the same app also runs in a browser at veilid.tech/list, where it starts a
+veilid node in the page via webassembly - so someone without the app installed
+can still open a link you send them without a gateway server in between.
+
+veilist is free software (GPL-3.0). the source, the build recipe and the pinned
+toolchain are at https://github.com/khimaros/veilist

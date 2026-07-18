@@ -92,6 +92,13 @@ def scroll(driver, find, dx, dy, duration_ms=1500, frequency=30):
     )
 
 
+def long_press(driver, find, duration_ms=1000, timeout=DEFAULT_TIMEOUT):
+    wait_for(driver, find, timeout)
+    driver.execute_script(
+        "flutter:longTap", find, {"durationMilliseconds": duration_ms}
+    )
+
+
 def settle(driver, seconds=2.0):
     # let animated transitions (reorder, dialogs) finish before asserting.
     time.sleep(seconds)

@@ -1,6 +1,6 @@
 // the home page: every list this device has created or opened (R5), with
 // per-list open, share, and delete (R6). also shows the veilid connection
-// state and lets the user paste a share link to join a list.
+// state and lets the user join a list by scanning or pasting a share link.
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,6 +11,7 @@ import '../data/local_list.dart';
 import '../data/share_link.dart';
 import '../veilid/veilid_service.dart';
 import 'list_detail_page.dart';
+import 'scan_page.dart';
 
 class ListingPage extends StatelessWidget {
   const ListingPage({super.key, required this.repository});
@@ -23,6 +24,13 @@ class ListingPage extends StatelessWidget {
       appBar: AppBar(
         title: const Text('veilist'),
         actions: [
+          if (canScanLinks)
+            IconButton(
+              key: const Key('scan_link_button'),
+              tooltip: 'scan a shared link',
+              icon: const Icon(Icons.qr_code_scanner),
+              onPressed: () => _scanLink(context),
+            ),
           IconButton(
             key: const Key('open_link_button'),
             tooltip: 'open a shared link',
@@ -83,13 +91,29 @@ class ListingPage extends StatelessWidget {
       action: 'open',
     );
     if (text == null || text.trim().isEmpty) return;
-    final link = ShareLink.tryParse(Uri.parse(text.trim()));
+    final link = shareLinkFromCode(text);
     if (link == null) {
       messenger.showSnackBar(
         const SnackBar(content: Text('not a veilist link')),
       );
       return;
     }
+    await _join(navigator, messenger, link);
+  }
+
+  /// read a list's qr code with the camera and join it (R1, R2).
+  Future<void> _scanLink(BuildContext context) async {
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final link = await scanShareLink(context);
+    if (link != null) await _join(navigator, messenger, link);
+  }
+
+  Future<void> _join(
+    NavigatorState navigator,
+    ScaffoldMessengerState messenger,
+    ShareLink link,
+  ) async {
     try {
       final local = await repository.joinList(link);
       await navigator.push(

@@ -16,6 +16,10 @@ import uuid
 CONCURRENT_CONVERGE_S = 20
 CONCURRENT_ROUNDS = 6
 
+# a local state edit only has to reach this device's own screen, so it needs no
+# network round-trip - just enough slack for a slow emulator to repaint.
+STATE_S = 20
+
 
 def unique(prefix):
     return f"{prefix}-{uuid.uuid4().hex[:6]}"
@@ -41,13 +45,29 @@ def open_list_no_infinite_spinner(f):  # R12
     assert f.is_empty()  # resolves to empty content, not a perpetual spinner
 
 
-def add_and_cycle_item_state(f):  # R7
-    _new_list(f, unique("cycle"))
+def add_and_toggle_item_state(f):  # R7
+    # a plain checkbox tap only moves between open and complete, both ways.
+    _new_list(f, unique("toggle"))
     f.add_item("wash dishes")
     assert f.has_item("wash dishes")
-    for _ in range(3):  # new -> active -> complete -> new; item stays present
-        f.cycle_item("wash dishes")
+    f.toggle_item("wash dishes")
+    f.wait_for_state("wash dishes", "complete", timeout_s=STATE_S)
+    f.toggle_item("wash dishes")
+    f.wait_for_state("wash dishes", "new", timeout_s=STATE_S)
     assert f.has_item("wash dishes")
+
+
+def pick_item_state(f):  # R7
+    # press and hold the checkbox to set a state a tap cannot reach.
+    _new_list(f, unique("pick"))
+    f.add_item("call plumber")
+    f.set_item_state("call plumber", "blocked")
+    f.wait_for_state("call plumber", "blocked", timeout_s=STATE_S)
+    f.set_item_state("call plumber", "active")
+    f.wait_for_state("call plumber", "active", timeout_s=STATE_S)
+    # a tap still completes an item the picker put in another state.
+    f.toggle_item("call plumber")
+    f.wait_for_state("call plumber", "complete", timeout_s=STATE_S)
 
 
 def edit_item_text(f):  # R11
@@ -78,8 +98,7 @@ def hide_show_completed(f):  # R7 (ui view filter)
     _new_list(f, unique("hide"))
     f.add_item("keep")
     f.add_item("done")
-    f.cycle_item("done")
-    f.cycle_item("done")  # -> complete
+    f.toggle_item("done")  # -> complete
     f.toggle_completed()  # hide
     assert f.has_item("keep") and not f.has_item("done")
     f.toggle_completed()  # show
@@ -116,6 +135,12 @@ def share_shows_link(f):  # R1
 
 def open_link_rejects_invalid(f):  # R2
     assert f.open_link("not a veilist link") is False
+
+
+def scan_link_opens_camera(f):  # R1, R2
+    # the other half of the share dialog's qr code: a device with a camera can
+    # read one instead of pasting a link.
+    assert f.scanner_opens()
 
 
 def delete_list(f):  # R6
@@ -172,17 +197,18 @@ def member_reorder_converges(f):  # R11 across devices
 
 
 def member_state_change_converges(f):  # R7 across devices
-    # one party cycles an item's state; another party viewing the same list must
+    # one party changes an item's state; another party viewing the same list must
     # see it live, both ways - the mirror of member_reorder_converges for the
     # state field. reported: marking an item active did not propagate to peers,
-    # though a reorder did.
+    # though a reorder did. covers both edit paths: a checkbox tap and the
+    # press-and-hold picker.
     b = f.peer()
     name = unique("mstate")
     _share_and_join(f, b, name, "task")
-    f.cycle_item("task")  # new -> active
-    b.wait_for_state("task", "active")
-    b.cycle_item("task")  # active -> complete
-    f.wait_for_state("task", "complete")
+    f.toggle_item("task")  # new -> complete
+    b.wait_for_state("task", "complete")
+    b.set_item_state("task", "blocked")  # from the picker
+    f.wait_for_state("task", "blocked")
 
 
 def member_item_rename_converges(f):  # R11 across devices
@@ -212,14 +238,14 @@ def concurrent_member_edits_converge(f):  # R4/R7 - coalesced value-less notify
     assert b.open_link(link)
     b.wait_for_item("alpha")
     b.wait_for_item("bravo")
-    # A cycles alpha and B cycles bravo at the same instant, round after round.
+    # A toggles alpha and B toggles bravo at the same instant, round after round.
     # each round asserts the cross-device state lands fast; a coalesced round the
-    # app dropped stalls past the timeout. states advance new -> active ->
-    # complete -> new as each item is cycled once per round.
-    after_cycle = ["active", "complete", "new"]
+    # app dropped stalls past the timeout. states alternate complete -> new as
+    # each item is toggled once per round.
+    after_toggle = ["complete", "new"]
     for r in range(CONCURRENT_ROUNDS):
-        f.cycle_with_peer(b, "alpha", "bravo")  # A -> subkey 0, B -> subkey 2
-        want = after_cycle[r % 3]
+        f.toggle_with_peer(b, "alpha", "bravo")  # A -> subkey 0, B -> subkey 2
+        want = after_toggle[r % 2]
         b.wait_for_state("alpha", want, timeout_s=CONCURRENT_CONVERGE_S)
         f.wait_for_state("bravo", want, timeout_s=CONCURRENT_CONVERGE_S)
 
@@ -236,15 +262,15 @@ def offline_edit_reaches_peer_after_reconnect(f):  # R12 - deterministic receive
     _share_and_join(f, b, name, "seed")
     f.go_offline()
     f.wait_for_sync_status("offline", timeout_s=30)
-    f.cycle_item("seed")  # new -> active, guaranteed offline
+    f.toggle_item("seed")  # new -> complete, guaranteed offline
     f.go_online()
     f.wait_for_sync_status("synced", timeout_s=120)  # f flushed to the dht
-    b.wait_for_state("seed", "active", timeout_s=45)  # peer must receive it
+    b.wait_for_state("seed", "complete", timeout_s=45)  # peer must receive it
 
 
 def live_view_reconciles_missed_edits(f):  # R12/R13 - consistently-failing repro
     # b is viewing a shared list (already live-synced). round after round, b goes
-    # offline, f cycles the item, and b reconnects and must show f's new state.
+    # offline, f toggles the item, and b reconnects and must show f's new state.
     # each round b's watch cannot see f's edit (b was offline), so b must catch up
     # on reconnect; the unfixed OpenList only re-reads before its FIRST live sync,
     # so an already-synced view never resyncs and strands. one flaky round is
@@ -256,7 +282,7 @@ def live_view_reconciles_missed_edits(f):  # R12/R13 - consistently-failing repr
     for _ in range(8):
         b.go_offline()
         b.wait_for_sync_status("offline", timeout_s=30)
-        f.cycle_item("seed")  # f edits while b is offline
+        f.toggle_item("seed")  # f edits while b is offline
         want = f.item_state("seed")  # f's own view is the ground truth
         b.go_online()
         b.wait_for_sync_status("synced", timeout_s=90)  # b's node reconnected
@@ -274,11 +300,11 @@ def peer_offline_misses_edit_then_reconnects(f):  # R12/R13 - deterministic
     _share_and_join(f, b, name, "seed")
     b.go_offline()
     b.wait_for_sync_status("offline", timeout_s=30)
-    f.cycle_item("seed")  # new -> active while b is offline
+    f.toggle_item("seed")  # new -> complete while b is offline
     f.wait_for_sync_status("synced", timeout_s=30)  # edit is on the dht
     b.go_online()
     b.wait_for_sync_status("synced", timeout_s=90)  # b's node is back online
-    b.wait_for_state("seed", "active", timeout_s=30)  # b must catch up
+    b.wait_for_state("seed", "complete", timeout_s=30)  # b must catch up
 
 
 def offline_multi_edits_reach_peer_after_reconnect(f):  # R12 - deterministic
@@ -296,13 +322,13 @@ def offline_multi_edits_reach_peer_after_reconnect(f):  # R12 - deterministic
     f.add_item("off-1")
     f.add_item("off-2")
     f.add_item("off-3")
-    f.cycle_item("seed")  # last edit: new -> active
+    f.toggle_item("seed")  # last edit: new -> complete
     f.go_online()
     f.wait_for_sync_status("synced", timeout_s=120)  # all edits now on the dht
     b.wait_for_item("off-1", timeout_s=45)
     b.wait_for_item("off-2", timeout_s=45)
     b.wait_for_item("off-3", timeout_s=45)
-    b.wait_for_state("seed", "active", timeout_s=45)  # the final edit must land
+    b.wait_for_state("seed", "complete", timeout_s=45)  # the final edit must land
 
 
 def offline_edits_flush_on_reconnect(f):  # R12
@@ -316,12 +342,12 @@ def offline_edits_flush_on_reconnect(f):  # R12
     f.go_offline()
     f.add_item("off-1")
     f.add_item("off-2")
-    f.cycle_item("seed")  # new -> active, also queued offline
+    f.toggle_item("seed")  # new -> complete, also queued offline
     f.go_listing()  # main screen; the widget frontends close the record here
     f.go_online()
     b.wait_for_item("off-1")
     b.wait_for_item("off-2")
-    b.wait_for_state("seed", "active")
+    b.wait_for_state("seed", "complete")
 
 
 def offline_edits_flush_while_backgrounded(f):  # R12
@@ -332,12 +358,12 @@ def offline_edits_flush_while_backgrounded(f):  # R12
     _share_and_join(f, b, name, "seed")
     f.go_offline()
     f.add_item("bg-1")
-    f.cycle_item("seed")  # new -> active
+    f.toggle_item("seed")  # new -> complete
     f.go_listing()
     f.set_foreground(False)  # background: stop foreground sync
     f.go_online()  # reconnect while backgrounded
     b.wait_for_item("bg-1")
-    b.wait_for_state("seed", "active")
+    b.wait_for_state("seed", "complete")
     f.set_foreground(True)  # restore for a clean teardown
 
 
@@ -380,7 +406,8 @@ def reorder_while_closed_syncs_on_reopen(f):  # the reopen resync bug
 SINGLE = [
     ("created_lists_are_tracked", created_lists_are_tracked),
     ("open_list_no_infinite_spinner", open_list_no_infinite_spinner),
-    ("add_and_cycle_item_state", add_and_cycle_item_state),
+    ("add_and_toggle_item_state", add_and_toggle_item_state),
+    ("pick_item_state", pick_item_state),
     ("edit_item_text", edit_item_text),
     ("reorder_items", reorder_items),
     ("delete_item", delete_item),
@@ -390,6 +417,7 @@ SINGLE = [
     ("rename_via_menu", rename_via_menu),
     ("share_shows_link", share_shows_link),
     ("open_link_rejects_invalid", open_link_rejects_invalid),
+    ("scan_link_opens_camera", scan_link_opens_camera),
     ("delete_list", delete_list),
     ("connection_status_visible", connection_status_visible),
 ]

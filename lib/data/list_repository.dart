@@ -124,8 +124,10 @@ class ListRepository extends ChangeNotifier {
         local.recordKey,
         writer: local.writer,
       );
-      final raw = await _network.readDocs(local.recordKey, memberCount);
-      local.title = foldDocs(raw.values.map(_decodeDoc)).title;
+      final read = await _network.readDocs(local.recordKey, memberCount);
+      // a partial read is fine here: this only warms the roster's cached title,
+      // which the open list refreshes anyway.
+      local.title = foldDocs(read.docs.values.map(_decodeDoc)).title;
       await _network.closeRecord(local.recordKey);
     } catch (_) {
       // offline join; the title fills in the first time the list is opened.
@@ -283,12 +285,15 @@ class ListRepository extends ChangeNotifier {
         await _network.openRecord(recordKey, writer: list.writer);
         _watched.add(recordKey);
       }
-      final raw = await _network.readDocs(
+      final read = await _network.readDocs(
         recordKey,
         kMaxMembers,
         forceRefresh: true,
       );
-      _updateCachedTitle(list, foldDocs(raw.values.map(_decodeDoc)).title);
+      _updateCachedTitle(
+        list,
+        foldDocs(read.docs.values.map(_decodeDoc)).title,
+      );
     } catch (_) {
       // unreachable for now; a later change or reconnect retries.
     }

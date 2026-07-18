@@ -1,4 +1,21 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- the camera plugin declares permissions for video recording and legacy
+         gallery writes. the qr scanner only previews and decodes frames (the
+         camera is opened with audio disabled), so drop them: a list app has no
+         business asking for a microphone or the photo library. READ_EXTERNAL_
+         STORAGE is not declared by any plugin - the manifest merger implies it
+         from WRITE_EXTERNAL_STORAGE, so it has to be removed too. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
+    <!-- a device with no camera can still do everything but scan a code, so the
+         camera must not gate installation. the plugin declares camera.any as
+         required, and the CAMERA permission implies a required android.hardware
+         .camera on top of that, so both are declared optional here. -->
+    <uses-feature android:name="android.hardware.camera.any" android:required="false"
+        tools:replace="android:required" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application
         android:label="veilist"
         android:name="${applicationName}"

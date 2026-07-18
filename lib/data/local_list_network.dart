@@ -34,12 +34,14 @@ class LocalListNetwork implements ListNetwork {
   @override
   Future<int> openRecord(String recordKey, {required String writer}) async => 1;
 
+  // the on-device doc IS the whole list, so a read here is always complete.
   @override
-  Future<Map<int, String>> readDocs(
+  Future<DocsRead> readDocs(
     String recordKey,
     int memberCount, {
     bool forceRefresh = false,
-  }) async => _doc == null ? const {} : {0: _doc!};
+  }) async =>
+      (docs: _doc == null ? const <int, String>{} : {0: _doc!}, complete: true);
 
   @override
   Future<void> writeDoc(String recordKey, int memberIndex, String json) async {

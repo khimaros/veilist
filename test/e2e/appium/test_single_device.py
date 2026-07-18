@@ -50,23 +50,34 @@ def test_open_list_does_not_spin_forever(driver):
     ) or ui.present(driver, ui.tooltip("changes are offline"))
 
 
-def test_add_and_cycle_item_state(driver):
-    # R7: the checkbox cycles new -> active -> complete -> new on each tap.
-    name = flows.unique("cycle")
+def test_add_and_toggle_item_state(driver):
+    # R7: a checkbox tap toggles the item between open and complete.
+    name = flows.unique("toggle")
     flows.create_list(driver, name)
     flows.open_list(driver, name)
     flows.add_item(driver, "wash dishes")
     glyph = ui.in_tile("wash dishes", "StateGlyphButton")
     tile = ui.ancestor(ui.text("wash dishes"), ui.type_("ListTile"))
-    at_glyph = ui.descendant(tile, ui.text("@"))  # active
     x_glyph = ui.descendant(tile, ui.text("x"))  # complete
     ui.tap(driver, glyph)
-    ui.wait_for(driver, at_glyph)
-    ui.tap(driver, glyph)
     ui.wait_for(driver, x_glyph)
-    ui.tap(driver, glyph)  # wraps back to new
+    ui.tap(driver, glyph)  # back to new
     ui.wait_absent(driver, x_glyph)
-    ui.wait_absent(driver, at_glyph)
+
+
+def test_pick_item_state_by_holding_the_checkbox(driver):
+    # R7: press and hold the checkbox to reach the states a tap does not.
+    name = flows.unique("pick")
+    flows.create_list(driver, name)
+    flows.open_list(driver, name)
+    flows.add_item(driver, "call plumber")
+    glyph = ui.in_tile("call plumber", "StateGlyphButton")
+    tile = ui.ancestor(ui.text("call plumber"), ui.type_("ListTile"))
+    ui.long_press(driver, glyph)
+    ui.wait_for(driver, ui.key("state_picker"))
+    ui.tap(driver, ui.key("state_blocked"))
+    ui.wait_absent(driver, ui.key("state_picker"))
+    ui.wait_for(driver, ui.descendant(tile, ui.text("!")))  # blocked
 
 
 def test_edit_item_text(driver):

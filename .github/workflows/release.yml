@@ -1,7 +1,14 @@
 # build the android apk (arm64) and the x86_64 linux binary whenever a vX.Y.Z
-# tag is pushed, then attach both to a github release named after the tag. the
-# build name is taken from the tag (v0.1.0 -> 0.1.0); the build number is the
-# run number so each build is distinct.
+# tag is pushed, then attach both to a github release named after the tag.
+#
+# the version comes from pubspec.yaml, not from this workflow: a release must be
+# reproducible from the tagged source alone, so nothing version-shaped is
+# injected here (f-droid rebuilds the same tag and compares, see
+# DISTRIBUTION.md). the tag is only checked against the pubspec.
+#
+# the apk is signed with the project's persistent release key, held in the
+# VEILIST_KEYSTORE_* secrets. never fall back to the debug key here: every
+# release must carry the same key or android refuses to update.
 #
 # toolchains come from mise.toml (flutter, rust, android-sdk, java), so the ci
 # builds with the exact pinned versions.
@@ -22,6 +29,15 @@ jobs:
       - uses: actions/checkout@v4
       - id: v
         run: echo "name=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: tag matches pubspec version
+        # the apk's version comes from pubspec.yaml, so a tag that disagrees with
+        # it would publish something labelled differently from its source.
+        run: |
+          pubspec="$(sed -n 's/^version: \([0-9.]*\)+.*/\1/p' pubspec.yaml)"
+          if [ "$pubspec" != "${{ steps.v.outputs.name }}" ]; then
+            echo "!! tag ${{ steps.v.outputs.name }} != pubspec version $pubspec" >&2
+            exit 1
+          fi
       - uses: jdx/mise-action@v2 # installs mise + the pinned tools from mise.toml
       - name: android ndk + rust android targets
         # the veilid ffi is cross-compiled with cargo via the ndk during the
@@ -33,12 +49,44 @@ jobs:
           mise exec -- sdkmanager "ndk;28.2.13676358"
           mise exec -- rustup target add aarch64-linux-android \
             armv7-linux-androideabi i686-linux-android x86_64-linux-android
+      - name: release keystore
+        # decoded to a file outside the workspace so it cannot be picked up by a
+        # later step or archived with the build output.
+        env:
+          KEYSTORE_BASE64: ${{ secrets.VEILIST_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "!! VEILIST_KEYSTORE_BASE64 is not set; refusing to publish a" \
+                 "debug-signed apk (see DISTRIBUTION.md)" >&2
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
       - name: build apk
+        env:
+          VEILIST_KEYSTORE: ${{ runner.temp }}/release.jks
+          VEILIST_KEYSTORE_PASSWORD: ${{ secrets.VEILIST_KEYSTORE_PASSWORD }}
+          VEILIST_KEY_ALIAS: ${{ secrets.VEILIST_KEY_ALIAS }}
+          VEILIST_KEY_PASSWORD: ${{ secrets.VEILIST_KEY_PASSWORD }}
         run: >
           mise exec -- flutter build apk --release
           --split-per-abi --target-platform android-arm64
-          --build-name "${{ steps.v.outputs.name }}"
-          --build-number "${{ github.run_number }}"
+      - name: confirm the apk carries the release key
+        # a misconfigured secret would otherwise fall back to a debug key and
+        # publish an apk nobody can upgrade from. run under `mise exec` so
+        # ANDROID_HOME points at the pinned sdk.
+        run: |
+          mise exec -- bash -c '
+            apksigner="$(ls "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)"
+            "$apksigner" verify --print-certs \
+              build/app/outputs/flutter-apk/app-arm64-v8a-release.apk > certs.txt'
+          if grep -q "CN=Android Debug" certs.txt; then
+            echo "!! apk is debug-signed" >&2
+            exit 1
+          fi
+          grep "SHA-256 digest" certs.txt
+      - name: clean up the keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
       - uses: actions/upload-artifact@v4
         with:
           name: android
@@ -72,9 +120,7 @@ jobs:
           mise exec -- flutter config --enable-linux-desktop
           mise exec -- flutter pub get
           bash scripts/patch_veilid_linux.sh
-          mise exec -- flutter build linux --release \
-            --build-name "${{ steps.v.outputs.name }}" \
-            --build-number "${{ github.run_number }}"
+          mise exec -- flutter build linux --release
           tar -C build/linux/x64/release/bundle \
             -czf "veilist-${{ steps.v.outputs.name }}-linux-x64.tar.gz" .
       - uses: actions/upload-artifact@v4

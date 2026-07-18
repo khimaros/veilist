@@ -76,8 +76,12 @@ if want android; then
   boot_emu veilist_bob 5556 emulator-5556
   echo "== installing apk on both (appium sessions stay noReset) =="
   APK="$ROOT/build/app/outputs/flutter-apk/app-debug.apk"
-  adb -s emulator-5554 install -r "$APK"
-  adb -s emulator-5556 install -r "$APK"
+  for s in emulator-5554 emulator-5556; do
+    adb -s "$s" install -r "$APK"
+    # pre-grant the camera so the qr-scanner flow never stalls behind the
+    # runtime permission dialog (a system window the flutter driver cannot see).
+    adb -s "$s" shell pm grant com.khimaros.veilist android.permission.CAMERA || true
+  done
   echo "== starting appium =="
   env APPIUM_HOME="$APPIUM_HOME" "$APPIUM" --address 127.0.0.1 --port 4723 \
     --base-path / --log-no-colors >/tmp/appium_matrix.log 2>&1 &

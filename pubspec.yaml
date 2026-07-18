@@ -4,19 +4,17 @@ description: "simple, private list sharing over the veilid network."
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-# The following defines the version and build number for your application.
-# A version number is three numbers separated by dots, like 1.2.43
-# followed by an optional build number separated by a +.
-# Both the version and the builder number may be overridden in flutter
-# build by specifying --build-name and --build-number, respectively.
-# In Android, build-name is used as versionName while build-number used as versionCode.
-# Read more about Android versioning at https://developer.android.com/studio/publish/versioning
-# In iOS, build-name is used as CFBundleShortVersionString while build-number is used as CFBundleVersion.
-# Read more about iOS versioning at
-# https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
-# In Windows, build-name is used as the major, minor, and patch parts
-# of the product and file versions while build-number is used as the build suffix.
-version: 0.2.0+1
+# version name + build number (android versionName + versionCode). this is the
+# ONE place the version lives: releases are built from the pubspec, never from a
+# ci-injected --build-name/--build-number, so anyone rebuilding a tag - f-droid's
+# rebuilder included - gets the same version out of the same source.
+#
+# the build number follows major*1000000 + minor*1000 + patch and must only ever
+# increase, because android refuses to install a lower versionCode. note that
+# `--split-per-abi` (how releases are built) adds an abi offset on top of it:
+# arm64 ships as 3000 + 2000 = 5000. the pre-0.3 releases were run-number based
+# and landed at 2005/2006 for arm64, so 3000 clears them.
+version: 0.3.0+3000
 
 environment:
   sdk: ^3.12.2
@@ -54,6 +52,13 @@ dependencies:
 
   # renders the share link as a scannable qr code in the share dialog.
   qr_flutter: ^4.1.0
+
+  # reads that qr code back with the device camera (R1, R2). camera capture has
+  # no dart/flutter standard-library route, so a plugin is unavoidable (R10).
+  # this one decodes in pure dart (a zxing port) over the flutter camera plugin:
+  # no proprietary blob, which mobile_scanner's google ml kit backend would have
+  # put in the apk and which both f-droid and izzyondroid refuse (DISTRIBUTION.md).
+  qr_code_dart_scan: ^0.14.0
 
 dev_dependencies:
   flutter_test:

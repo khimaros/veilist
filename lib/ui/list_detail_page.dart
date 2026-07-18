@@ -1,6 +1,7 @@
-// a single list: its items, each with a checkbox that cycles item states
-// (R7), plus add/edit/delete and a share action. drives an [OpenList], which
-// folds every member's contributions and pushes this device's edits.
+// a single list: its items, each with a checkbox that toggles open/complete on
+// a tap, and a press-and-hold anywhere on the row offering the other item
+// states (R7), plus add/edit/delete and a share action. drives an [OpenList],
+// which folds every member's contributions and pushes this device's edits.
 
 import 'dart:async';
 
@@ -192,8 +193,42 @@ class _ListDetailPageState extends State<ListDetailPage>
         open: open,
         canReorder: !_hideCompleted,
         onEdit: () => _editItem(open, visible[i]),
+        onPickState: () => _pickState(open, visible[i]),
       ),
     );
+  }
+
+  /// press-and-hold the checkbox to set any shipped state directly - the tap
+  /// itself only toggles open/complete, which covers the common case (R7).
+  Future<void> _pickState(OpenList open, ListItem item) async {
+    final next = await showDialog<ItemState>(
+      context: context,
+      builder: (_) => SimpleDialog(
+        key: const Key('state_picker'),
+        title: const Text('item state'),
+        children: [
+          for (final state in ItemState.selectable)
+            SimpleDialogOption(
+              key: Key('state_${state.code}'),
+              onPressed: () => Navigator.pop(context, state),
+              child: Row(
+                children: [
+                  StateGlyph(state: state),
+                  const SizedBox(width: 12),
+                  Text(state.label),
+                  // no Expanded/Spacer here: SimpleDialog measures its content's
+                  // intrinsic width, which a flex child cannot answer.
+                  if (state == item.state) ...[
+                    const SizedBox(width: 8),
+                    const Icon(Icons.check, size: 18),
+                  ],
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+    if (next != null) open.setItemState(item.id, next);
   }
 
   Future<void> _editItem(OpenList open, ListItem item) async {
@@ -326,6 +361,7 @@ class _ItemTile extends StatelessWidget {
     required this.open,
     required this.canReorder,
     required this.onEdit,
+    required this.onPickState,
   });
 
   final int index;
@@ -333,6 +369,7 @@ class _ItemTile extends StatelessWidget {
   final OpenList open;
   final bool canReorder;
   final VoidCallback onEdit;
+  final VoidCallback onPickState;
 
   @override
   Widget build(BuildContext context) {
@@ -350,7 +387,8 @@ class _ItemTile extends StatelessWidget {
       child: ListTile(
         leading: StateGlyphButton(
           state: item.state,
-          onTap: () => open.cycleState(item.id),
+          onTap: () => open.toggleState(item.id),
+          onPickState: onPickState,
         ),
         title: Text(
           item.text,
@@ -359,6 +397,9 @@ class _ItemTile extends StatelessWidget {
               : null,
         ),
         onTap: onEdit, // tap to edit the item text
+        // holding anywhere on the row opens the state picker: the checkbox
+        // alone is a small target to find by touch.
+        onLongPress: onPickState,
         trailing: canReorder
             ? ReorderableDragStartListener(
                 index: index,
@@ -403,35 +444,64 @@ class _SyncChip extends StatelessWidget {
   }
 }
 
-/// the checkbox: a bordered glyph box that cycles item states on tap (R7). the
-/// glyph matches the plain-text notation, e.g. `[ ]`, `[x]`.
+/// the checkbox: a tap ticks the item off or re-opens it, a press-and-hold (or
+/// a right-click on desktop) opens the picker for every other state (R7). the
+/// row carries the same long-press, so the picker is reachable without aiming.
 class StateGlyphButton extends StatelessWidget {
-  const StateGlyphButton({super.key, required this.state, required this.onTap});
+  const StateGlyphButton({
+    super.key,
+    required this.state,
+    required this.onTap,
+    required this.onPickState,
+  });
 
   final ItemState state;
   final VoidCallback onTap;
+  final VoidCallback onPickState;
+
+  /// the glyph is small on purpose, but a touch target must not be: the box is
+  /// padded out to the 48dp minimum, with the glyph centred inside it.
+  static const double _kTouchTarget = 48;
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(6),
-      child: Container(
-        width: 27,
-        height: 27,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          border: Border.all(color: scheme.outline),
-          borderRadius: BorderRadius.circular(5),
-        ),
-        child: Text(
-          state.glyph.trim().isEmpty ? '' : state.glyph,
-          style: const TextStyle(
-            fontFamily: 'monospace',
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
-          ),
+    return SizedBox(
+      width: _kTouchTarget,
+      height: _kTouchTarget,
+      child: InkWell(
+        onTap: onTap,
+        onLongPress: onPickState,
+        onSecondaryTap: onPickState,
+        borderRadius: BorderRadius.circular(8),
+        child: Center(child: StateGlyph(state: state)),
+      ),
+    );
+  }
+}
+
+/// a bordered glyph box, matching the plain-text notation (`[ ]`, `[x]`).
+/// shared by the checkbox and the state picker's rows.
+class StateGlyph extends StatelessWidget {
+  const StateGlyph({super.key, required this.state});
+
+  final ItemState state;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 27,
+      height: 27,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        border: Border.all(color: Theme.of(context).colorScheme.outline),
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Text(
+        state.glyph.trim().isEmpty ? '' : state.glyph,
+        style: const TextStyle(
+          fontFamily: 'monospace',
+          fontSize: 14,
+          fontWeight: FontWeight.bold,
         ),
       ),
     );

@@ -81,12 +81,14 @@ class FakeListNetwork implements ListNetwork {
   Future<int> openRecord(String recordKey, {required String writer}) async =>
       dht.memberCount(recordKey);
 
+  // the fake dht answers every read in full; tests that need a partial read
+  // subclass this and say so (see open_list_sync_test.dart).
   @override
-  Future<Map<int, String>> readDocs(
+  Future<DocsRead> readDocs(
     String recordKey,
     int memberCount, {
     bool forceRefresh = false,
-  }) async => dht.readDocs(recordKey);
+  }) async => (docs: dht.readDocs(recordKey), complete: true);
 
   @override
   Future<void> writeDoc(String recordKey, int memberIndex, String json) async =>

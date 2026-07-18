@@ -169,28 +169,33 @@ class WebFrontend(Frontend):
     def add_item(self, text):
         self._call("add", self._current, text)
 
-    def cycle_item(self, text):
-        self._call("cycle", self._current, self._id_of(text))
+    def toggle_item(self, text):
+        self._call("toggle", self._current, self._id_of(text))
 
-    def cycle_item_nowait(self, text):
-        # kick off the cycle write but do not await its network fanout, so a
+    def set_item_state(self, text, state):
+        # the hook sets the state directly; the press-and-hold gesture itself is
+        # ui-only and has no dom to drive on a canvas-rendered page.
+        self._call("setItemState", self._current, self._id_of(text), state)
+
+    def toggle_item_nowait(self, text):
+        # kick off the toggle write but do not await its network fanout, so a
         # second member's concurrent write lands in the same storage-node flush
-        # window (the hook's cycle() otherwise blocks on setDHTValue).
-        self._fire_cycle(self._id_of(text))
+        # window (the hook's toggle() otherwise blocks on setDHTValue).
+        self._fire_toggle(self._id_of(text))
 
-    def _fire_cycle(self, iid):
+    def _fire_toggle(self, iid):
         self._page.evaluate(
-            "(a) => { window.veilistTest.cycle(a[0], a[1]); return 0; }",
+            "(a) => { window.veilistTest.toggle(a[0], a[1]); return 0; }",
             [self._current, iid],
         )
 
-    def cycle_with_peer(self, peer, my_text, peer_text):
+    def toggle_with_peer(self, peer, my_text, peer_text):
         # playwright's sync api is not thread-safe, so resolve both item ids
         # first, then fire the two non-awaited writes back-to-back (one evaluate
         # round-trip apart) so they still coalesce in one flush window.
         my_id, their_id = self._id_of(my_text), peer._id_of(peer_text)
-        self._fire_cycle(my_id)
-        peer._fire_cycle(their_id)
+        self._fire_toggle(my_id)
+        peer._fire_toggle(their_id)
 
     def go_offline(self):
         self._call("setOnline", False)

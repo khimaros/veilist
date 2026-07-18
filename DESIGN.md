@@ -83,9 +83,13 @@ then write the map to this member's subkey.
 
 `ItemState` is an enum whose glyphs match the plain-text notation:
 `[ ]` new, `[@]` active, `[x]` complete, `[~]` obsolete, `[?]` undecided,
-`[!]` blocked, `[>]` deferred. `cycleNext()` defines the checkbox order. v1 ui
-exposes only new and complete; the enum and wire format already carry the rest,
-so enabling them later touches no dht data and no links (R7).
+`[!]` blocked, `[>]` deferred. ticking an item off is by far the common case, so
+a checkbox tap only moves between complete and new (`toggled`); every other
+state is a deliberate choice, made by pressing and holding the item - anywhere
+on the row, not just the checkbox - and picking from `ItemState.selectable`
+(new, active, complete, blocked). the
+remaining states stay in the enum and wire format, so surfacing them later
+touches no dht data and no links (R7).
 
 ## sharing and links (R1, R2, R3)
 
@@ -103,6 +107,29 @@ runs veilid in wasm, reads the list, and offers "open in app" (R3). `recordKey`
 is a `VLD0:` typed key; `w` is the invitee's writer keypair; `m` is the member
 slot it occupies, so the joiner writes the right subkey without inspecting the
 schema.
+
+the share dialog renders the app link as a qr code, and the listing offers a
+camera scanner (`ui/scan_page.dart`) that reads one back, so joining a list can
+be a point-and-shoot rather than a copy-paste. camera capture has no
+standard-library route, so `qr_code_dart_scan` is the one plugin here (R10): it
+drives the flutter camera plugin and decodes in *pure dart* (a zxing port). the
+obvious alternative, mobile_scanner, decodes with google's ml kit, which ships
+closed-source blobs (`libbarhopper_v3.so`, tflite models) in the apk - barred
+from f-droid and izzyondroid, so it is barred here (DISTRIBUTION.md). the
+browser cannot stream camera frames to dart, so web scans a still the user
+captures while native decodes the live preview. the affordance appears only
+where a camera exists (android/ios/web); a refused or absent camera - including
+a page served over plain http, where the browser withholds it - lands on the "no
+camera available" state, with pasting still open. the production web deployment
+is http (see share links, below), so scanning there needs an https origin.
+
+opening a launch link shows a loading screen rather than the listing: `main`
+resolves the link (`LinkHandler.initialLink`) before starting the node, covers
+the app with a spinner (`MaterialApp.builder`) while the node attaches and the
+join runs, then pushes the detail page with a zero-duration transition and drops
+the cover - so an incoming shared list goes loading -> list without the listing
+flashing behind it. a normal launch drops the cover as soon as boot finds no
+link and shows the listing immediately while the node connects (local-first).
 
 ## persistence
 
@@ -159,6 +186,20 @@ linux job) run `scripts/patch_veilid_linux.sh` after every `flutter pub get` to
 point corrosion at the plugin's own bundled crate. android is unaffected (a
 different build path), as is web (the wasm blob).
 
+the android toolchain is pinned to AGP 8.9.1 + gradle 8.11.1: rust-android-gradle
+0.9.6 (which veilid's plugin uses) relies on a gradle api that gradle 9 removed,
+so the whole 9.x line is out, while the camerax the scanner pulls in refuses to
+build below AGP 8.9.1 - the pin is the narrow band that satisfies both.
+
+release apks are signed with a persistent key (from `android/key.properties` or
+`VEILIST_KEYSTORE*` in ci) rather than the debug key, and the app's version comes
+only from `pubspec.yaml`. both exist so a release can be reproduced from its tag
+and updated in place; see DISTRIBUTION.md.
+
+`scripts/build_icons.sh` renders every platform icon (android mipmaps, ios
+appiconset, web) from the two svg sources in `assets/icon/`, so the icon is
+edited in one place rather than as fifteen pngs.
+
 ## opening a record as a joiner
 
 `createDHTRecord` is local-only, and the creator's `setDHTValue` calls publish
@@ -197,6 +238,17 @@ that case rather than dropping the update; dropping it left a concurrent edit
 (e.g. one member marking an item active while another edited) invisible until
 veilid's ~30s fallback change-inspection.
 
+a read can also come back *incomplete*: veilid's network inspect returns
+TryAgain until a freshly opened record is reachable (the layer then falls back to
+the local view of which subkeys hold data), and each subkey read can fail on its
+own. `readDocs` therefore returns `(docs, complete)`, and `OpenList` treats only
+a complete read as a live sync. without that distinction a joiner declared
+itself synced on the first fragment and then visibly rewrote the list as the
+remaining members' docs arrived - which reads as the app replaying history, when
+it is really the fold gaining one member at a time. a first-ever join also keeps
+its spinner until a complete read, so a scanned link never lands on a half-built
+list.
+
 the same staleness applies to lists you have not opened. while the app is
 foregrounded, `ListRepository` keeps one watch per roster list (via
 `startForegroundSync`): a change marks a list dirty and the repository re-reads
@@ -223,7 +275,7 @@ the layers.
 the true-ui layer (`test/e2e/appium/`, python + appium flutter-driver) drives the
 real widgets on android emulators, with no test hook and no fakes, so it
 exercises the app exactly as a person does. single-device tests cover every
-local-first flow (create, open without an endless spinner, add, cycle state,
+local-first flow (create, open without an endless spinner, add, set state,
 edit, reorder, swipe-delete, share dialog with qr, open-link, delete from
 listing); a two-device test boots two emulators and proves deep-link join plus
 bidirectional convergence over the live dht. the driven build uses

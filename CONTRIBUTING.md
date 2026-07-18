@@ -28,6 +28,9 @@ make wasm       # build the veilid wasm blob into web/wasm/
 make clean
 ```
 
+the app icon is rendered from `assets/icon/*.svg` by `scripts/build_icons.sh`
+(needs inkscape); edit the svg and re-run it rather than touching the pngs.
+
 ## workflow
 
 - before starting a task, add it to [ROADMAP.md](ROADMAP.md). mark it done when
@@ -49,7 +52,7 @@ three layers, fastest first:
 - **true-ui e2e** (`test/e2e/appium/`, python + `uv` + appium flutter-driver, run
   with `make test-ui-e2e`): drives the real widgets on an android emulator with
   no fakes and no test hook, so it exercises every local-first flow the way a
-  person does - create, open (without an endless spinner), add, cycle state,
+  person does - create, open (without an endless spinner), add, set state,
   edit, reorder, swipe-delete, the share dialog (qr + both links), open-link
   validation, and delete from the listing. the driven build uses
   `test/driver/app.dart`; see the two-device section below for setup.
@@ -140,10 +143,16 @@ gesture on web) reports skip, not fail.
 
 ## releases
 
-pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`, which builds the
-android arm64 apk and the linux x86_64 binary (build name taken from the tag)
-and attaches both to a github release. the version in `pubspec.yaml` is the
-fallback build name.
+bump `version:` in `pubspec.yaml`, add a changelog entry under
+`fastlane/metadata/android/en-US/changelogs/<versionCode>.txt`, then push a
+`vX.Y.Z` tag. `.github/workflows/release.yml` builds the android arm64 apk
+(signed with the project's release key, from repository secrets) and the linux
+x86_64 binary, and attaches both to a github release.
+
+the workflow injects no version of its own - it only checks that the tag matches
+the pubspec - so a rebuild of a tag from clean source produces the same artifact.
+see [DISTRIBUTION.md](DISTRIBUTION.md) for the signing key, why it must never
+change, and what izzyondroid and f-droid need.
 
 note: the linux job builds on ubuntu (glibc) to match flutter's prebuilt linux
 engine, which is glibc-linked; the binary needs a comparable glibc at runtime. it

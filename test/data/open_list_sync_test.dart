@@ -29,13 +29,52 @@ class LatentNetwork extends FakeListNetwork {
   LatentNetwork(super.dht);
 
   @override
-  Future<Map<int, String>> readDocs(
+  Future<DocsRead> readDocs(
     String recordKey,
     int memberCount, {
     bool forceRefresh = false,
   }) async => isReady
       ? super.readDocs(recordKey, memberCount, forceRefresh: forceRefresh)
-      : <int, String>{};
+      : (docs: const <int, String>{}, complete: false);
+}
+
+// a fake network that reads a record the way a fresh joiner does: the open-time
+// local read sees nothing (nothing is cached yet), the first network read
+// reaches only some members' subkeys - veilid's network inspect can come back
+// TryAgain, so the layer falls back to the local view of which subkeys hold
+// data, and each subkey read can fail on its own - and later reads see it all.
+class PartialReadNetwork extends FakeListNetwork {
+  PartialReadNetwork(super.dht, {required this.firstNetworkReadMembers});
+
+  /// members visible to the first network read; later reads see them all.
+  final Set<int> firstNetworkReadMembers;
+  int _networkReads = 0;
+
+  @override
+  Future<DocsRead> readDocs(
+    String recordKey,
+    int memberCount, {
+    bool forceRefresh = false,
+  }) async {
+    if (!forceRefresh) {
+      // nothing cached on this device, and a local read is never the whole
+      // picture anyway.
+      return (docs: const <int, String>{}, complete: false);
+    }
+    final all = await super.readDocs(
+      recordKey,
+      memberCount,
+      forceRefresh: forceRefresh,
+    );
+    if (_networkReads++ > 0) return all;
+    return (
+      docs: {
+        for (final e in all.docs.entries)
+          if (firstNetworkReadMembers.contains(e.key)) e.key: e.value,
+      },
+      complete: false,
+    );
+  }
 }
 
 OpenList openAs(
@@ -123,6 +162,62 @@ void main() {
       open.dispose();
     },
   );
+
+  test('a partial first read must not be reported as fully synced', () {
+    // reported after joining by scanning a qr code: the list appears, the chip
+    // shows "synced", and then the list keeps rewriting itself for a while. a
+    // joiner's first read can return only some members' subkeys, and OpenList
+    // marks the list live-synced after ANY read that completes while the node is
+    // ready - so the chip claims everything has arrived while the remaining
+    // members' docs are still landing, each one visibly re-folding the list.
+    fakeAsync((async) {
+      final dht = FakeDht();
+      final rec = dht.createRecord();
+      writeMember(
+        dht,
+        rec.recordKey,
+        0,
+        Contribution()..addItem('a', 'from member 0', const LogicalTs(1, 0)),
+      );
+      writeMember(
+        dht,
+        rec.recordKey,
+        1,
+        Contribution()..addItem('b', 'from member 1', const LogicalTs(2, 1)),
+      );
+
+      // the joiner's first network read only reaches member 0's subkey.
+      final net = PartialReadNetwork(dht, firstNetworkReadMembers: {0});
+      final open = openAs(dht, rec, member: 2, net: net);
+      unawaited(open.open());
+      async.flushMicrotasks();
+
+      expect(
+        open.items.map((i) => i.text),
+        ['from member 0'],
+        reason: 'only part of the record has been read so far',
+      );
+      expect(
+        open.syncStatus,
+        isNot(SyncStatus.synced),
+        reason: 'the chip must not claim synced while the view is incomplete',
+      );
+      expect(
+        open.awaitingInitialSync,
+        isTrue,
+        reason:
+            'a first-ever join keeps its spinner until the list is whole, '
+            'rather than showing a fragment that then rewrites itself',
+      );
+
+      // once the rest arrives the view is whole, and only then is it synced.
+      async.elapse(const Duration(seconds: 15));
+      expect(open.items.map((i) => i.text), ['from member 0', 'from member 1']);
+      expect(open.syncStatus, SyncStatus.synced);
+      expect(open.awaitingInitialSync, isFalse);
+      open.dispose();
+    });
+  });
 
   test('a live view reconciles a change whose watch update was dropped', () {
     // the watch is the fast path but the network can silently drop a
