@@ -5,26 +5,92 @@
 
 import 'item_state.dart';
 
-/// a logical timestamp: wall-clock microseconds with a member-index tiebreak,
-/// compared lexicographically. good enough for v1; a hybrid logical clock is a
-/// later hardening step (see DESIGN.md).
+/// a hybrid logical timestamp: wall-clock microseconds, a counter, and the
+/// member index as a final tiebreak, compared lexicographically in that order.
+///
+/// the counter is what frees ordering from the devices' clocks agreeing. a
+/// device advances its clock past every timestamp it observes (see
+/// [HybridClock]), so an edit made after seeing a peer's edit always carries a
+/// greater ts even if this device's wall clock runs behind. only genuinely
+/// concurrent edits - where neither side had seen the other - fall through to
+/// the arbitrary member tiebreak, which no clock could have ordered anyway.
 class LogicalTs implements Comparable<LogicalTs> {
-  const LogicalTs(this.micros, this.member);
+  const LogicalTs(this.micros, this.member, [this.counter = 0]);
 
   final int micros;
   final int member;
+  final int counter;
 
   @override
-  int compareTo(LogicalTs o) => micros != o.micros
-      ? micros.compareTo(o.micros)
-      : member.compareTo(o.member);
+  int compareTo(LogicalTs o) {
+    if (micros != o.micros) return micros.compareTo(o.micros);
+    if (counter != o.counter) return counter.compareTo(o.counter);
+    return member.compareTo(o.member);
+  }
 
   bool operator >(LogicalTs o) => compareTo(o) > 0;
 
-  List<dynamic> toJson() => [micros, member];
+  // the counter is APPENDED, so a client built before hybrid clocks reads the
+  // first two fields exactly as it always did and ignores the third: it falls
+  // back to wall-clock ordering rather than misreading the timestamp.
+  List<dynamic> toJson() => [micros, member, counter];
 
   factory LogicalTs.fromJson(List<dynamic> j) =>
-      LogicalTs(j[0] as int, j[1] as int);
+      LogicalTs(j[0] as int, j[1] as int, j.length > 2 ? j[2] as int : 0);
+}
+
+/// this device's hybrid logical clock, shared by every list it has open.
+///
+/// `now()` never returns a timestamp lower than one already issued or observed,
+/// so causally-later edits sort later regardless of clock skew between devices.
+/// note this ratchets: a peer whose wall clock is wildly ahead drags every
+/// device that reads its edits forward with it, and that cannot be undone.
+class HybridClock {
+  HybridClock({int Function()? physicalNow})
+    : _physicalNow =
+          physicalNow ?? (() => DateTime.now().microsecondsSinceEpoch);
+
+  /// the device-wide clock. lists share it so a timestamp seen in one list
+  /// still orders edits made in another.
+  static final HybridClock device = HybridClock();
+
+  final int Function() _physicalNow;
+
+  int _micros = 0;
+  int _counter = 0;
+
+  /// stamp a local edit by [member].
+  LogicalTs now(int member) {
+    final physical = _physicalNow();
+    if (physical > _micros) {
+      _micros = physical;
+      _counter = 0;
+    } else {
+      _counter++;
+    }
+    return LogicalTs(_micros, member, _counter);
+  }
+
+  /// take note of a timestamp seen from another device, so our next edit sorts
+  /// after it.
+  void observe(LogicalTs ts) {
+    final physical = _physicalNow();
+    final highest = [
+      _micros,
+      ts.micros,
+      physical,
+    ].reduce((a, b) => a > b ? a : b);
+    if (highest == _micros && highest == ts.micros) {
+      _counter = (_counter > ts.counter ? _counter : ts.counter) + 1;
+    } else if (highest == _micros) {
+      _counter++;
+    } else if (highest == ts.micros) {
+      _counter = ts.counter + 1;
+    } else {
+      _counter = 0;
+    }
+    _micros = highest;
+  }
 }
 
 /// a single last-writer-wins register: a value stamped with the ts at which it
@@ -59,6 +125,11 @@ class ItemAssertion {
     state: Lww.pick(state, o.state),
     order: Lww.pick(order, o.order),
   );
+
+  Iterable<LogicalTs> get timestamps => [
+    for (final f in [present, text, state, order])
+      if (f != null) f.ts,
+  ];
 
   Map<String, dynamic> toJson() => {
     if (present != null) 'p': {'v': present!.value, 't': present!.ts.toJson()},
@@ -112,6 +183,22 @@ class Contribution {
       _at(id).order = Lww(order, ts);
 
   void removeItem(String id, LogicalTs ts) => _at(id).present = Lww(false, ts);
+
+  /// merge [o] into a new contribution, per item and per field. a reader uses
+  /// this to fold a freshly read copy of a member's doc into the copy it holds:
+  /// a dht read can return an OLDER version of a subkey (whichever replica
+  /// answers), and replacing rather than merging would step the view backwards.
+  Contribution mergedWith(Contribution o) {
+    final merged = <String, ItemAssertion>{...items};
+    o.items.forEach((id, a) {
+      final cur = merged[id];
+      merged[id] = cur == null ? a : cur.mergedWith(a);
+    });
+    return Contribution(merged);
+  }
+
+  Iterable<LogicalTs> get timestamps =>
+      items.values.expand((a) => a.timestamps);
 
   Map<String, dynamic> toJson() => items.map((k, v) => MapEntry(k, v.toJson()));
 

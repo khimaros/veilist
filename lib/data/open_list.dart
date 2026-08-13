@@ -32,10 +32,16 @@ class OpenList extends ChangeNotifier {
     required this.local,
     required ListNetwork network,
     this.onTitleChanged,
-  }) : _net = network;
+    HybridClock? clock,
+  }) : _net = network,
+       _clock = clock ?? HybridClock.device;
 
   final LocalList local;
   final ListNetwork _net;
+
+  // shared across this device's lists by default, so a timestamp seen in one
+  // list still orders edits made in another.
+  final HybridClock _clock;
 
   /// called when the folded title changes, so the roster cache stays current.
   final void Function(String title)? onTitleChanged;
@@ -92,7 +98,7 @@ class OpenList extends ChangeNotifier {
         writer: local.writer,
       );
       final read = await _net.readDocs(local.recordKey, _memberCount);
-      read.docs.forEach((i, json) => _docs[i] = _decode(json));
+      read.docs.forEach(_receive);
       // cached data (a list synced before) means we can show it and allow edits
       // immediately; a first-ever join with nothing cached waits for the sync.
       if (read.docs.isNotEmpty) _loadedFromCache = true;
@@ -193,7 +199,7 @@ class OpenList extends ChangeNotifier {
       // clobber our in-memory contribution, which may hold an edit that has not
       // been flushed yet (e.g. a rename racing the open-time refresh).
       if (i == local.memberIndex) return;
-      _docs[i] = _decode(json);
+      _receive(i, json);
     });
     _refold();
     // only a read that got EVERY member's subkey means the list is whole. a
@@ -214,7 +220,7 @@ class OpenList extends ChangeNotifier {
     // own writes so a late echo cannot clobber a newer in-memory edit.
     if (c.memberIndex == local.memberIndex) return;
     _liveSynced = true; // data landed live from the network
-    _docs[c.memberIndex] = _decode(c.json);
+    _receive(c.memberIndex, c.json);
     _refold();
     notifyListeners();
     unawaited(_updateSync());
@@ -303,16 +309,29 @@ class OpenList extends ChangeNotifier {
     _items = folded.items;
   }
 
-  MemberDoc _decode(String json) =>
-      MemberDoc.fromJson(jsonDecode(json) as Map<String, dynamic>);
+  // decode another member's doc and merge it into the copy we already hold. a
+  // dht read can return an OLDER version of a subkey (whichever replica
+  // answers), so replacing would walk the view backwards and then forwards
+  // again as reads alternate - the "bouncing" this fold exists to prevent.
+  // observing the doc's timestamps also advances our clock past anything the
+  // peer has done, so our next edit sorts after it however skewed the clocks.
+  void _receive(int member, String json) {
+    final incoming = MemberDoc.fromJson(
+      jsonDecode(json) as Map<String, dynamic>,
+    );
+    for (final ts in incoming.timestamps) {
+      _clock.observe(ts);
+    }
+    final held = _docs[member];
+    _docs[member] = held == null ? incoming : held.mergedWith(incoming);
+  }
 
   // ids are unique per device: member index + creation micros + a local seq
   // guards against two adds within the same microsecond.
   String _newId() =>
       '${local.memberIndex}-${DateTime.now().microsecondsSinceEpoch}-${_idSeq++}';
 
-  LogicalTs _now() =>
-      LogicalTs(DateTime.now().microsecondsSinceEpoch, local.memberIndex);
+  LogicalTs _now() => _clock.now(local.memberIndex);
 
   @override
   void dispose() {

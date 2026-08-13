@@ -67,9 +67,29 @@ fields `present` (bool), `text` (string), `state` (enum), `order` (int). this
 map is already compacted: it only ever holds each writer's latest assertion per
 field, so it stays O(items the member touched) and fits one subkey.
 
-`ts` is a logical timestamp: `(wallClockMicros, memberIndex)`, compared
-lexicographically. wall clock plus a member-index tiebreak is enough for v1;
-a hybrid logical clock is a later hardening step.
+`ts` is a **hybrid logical timestamp**: `(wallClockMicros, counter,
+memberIndex)`, compared lexicographically in that order. plain wall-clock
+last-writer-wins would make conflict resolution depend on the devices' clocks
+agreeing - an edit made after seeing a peer's change loses whenever the peer's
+clock runs ahead - so each device keeps a `HybridClock` that advances past every
+timestamp it observes from another member. an edit that could have seen a peer's
+edit therefore always carries a greater ts, whatever the skew. edits that are
+genuinely concurrent (neither side had seen the other) fall through to the
+counter and then the member index: an arbitrary but deterministic order, which
+is all any scheme can offer without synchronised clocks. the clock ratchets, so
+one peer with a wildly fast clock pulls every device that reads its edits
+forward with it.
+
+on the wire the counter is appended - `[micros, member, counter]` - so a client
+built before hybrid clocks reads the first two fields as it always did and
+ignores the third, degrading to wall-clock ordering rather than misparsing.
+
+a reader **merges** each member's doc into the copy it already holds rather than
+replacing it (`MemberDoc.mergedWith`, per-field greatest ts). a dht read is
+answered by whichever replica responds, so it can return an older version of a
+subkey; replacing would step that member's contribution backwards and the view
+would visibly bounce between states as reads alternated. merging makes a view
+monotonic: it only ever moves forward.
 
 **fold** (deterministic, pure): merge all members' maps; for each item id and
 field pick the assertion with the greatest `ts`. an item is visible iff its

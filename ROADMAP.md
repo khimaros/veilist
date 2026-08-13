@@ -417,6 +417,30 @@ for pinning specific failure modes.
       3/3 over veilid-in-wasm. `scan_link_opens_camera` skips on linux (no
       camera) and web (hook-driven, no gesture surface).
 
+## phase 22 - monotonic views and causal ordering
+
+- [x] BUG ("the list bounces between states"): `OpenList` REPLACED a member's
+      whole doc on every read and watch event, so an older copy from a lagging
+      dht replica regressed that member's contribution and the fold stepped
+      backwards - then the next read moved it forward again. the crdt was never
+      wrong; the newer copy was thrown away before the fold could compare
+      timestamps. fix: merge an incoming member doc into what we hold (per-field
+      greatest ts, the same rule `foldList` uses across members), so a view can
+      only ever move forward. covered by "a stale read of a member must not move
+      the view backwards", which fails on the pre-fix code.
+- [x] wall-clock LWW makes conflict resolution depend on the devices' clocks
+      agreeing: an edit made after seeing a peer's change loses if the peer's
+      clock runs ahead. replace `LogicalTs` with a hybrid logical clock -
+      (physical, counter, member), advanced past every timestamp the device
+      observes - so a causally-later edit always wins whatever the skew. the
+      wire format appends the counter (`[micros, member, counter]`), which an
+      older client parses as today's `[micros, member]` and ignores. truly
+      concurrent edits (neither side saw the other) still need an arbitrary
+      tiebreak; hlc makes it deterministic rather than clock-dependent. covered
+      by HybridClock unit tests and an end-to-end flow where a device an hour
+      behind still wins after reading its peer; disabling clock observation
+      makes that test fail, so it has teeth.
+
 ## phase 21 - honest sync state on join
 
 - [x] the state picker was hard to hit: only the 27dp glyph box carried the

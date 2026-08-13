@@ -93,4 +93,53 @@ void main() {
       expect(after.single.state, ItemState.blocked);
     });
   });
+
+  group('HybridClock', () {
+    test('an edit made after seeing a peer wins, however skewed our clock', () {
+      // the whole point: our wall clock is an hour behind the peer's, but we
+      // have SEEN their edit, so ours is causally later and must sort later.
+      // under plain wall-clock ordering our edit would lose and vanish.
+      final peerEdit = LogicalTs(3600 * 1000000, 1);
+      final ours = HybridClock(physicalNow: () => 1000);
+      ours.observe(peerEdit);
+      expect(ours.now(0) > peerEdit, isTrue);
+    });
+
+    test('two edits in the same microsecond still order', () {
+      final clock = HybridClock(physicalNow: () => 500);
+      final first = clock.now(0);
+      expect(clock.now(0) > first, isTrue);
+    });
+
+    test('the wall clock drives ordering once it moves on', () {
+      var physical = 100;
+      final clock = HybridClock(physicalNow: () => physical);
+      final first = clock.now(0);
+      physical = 200;
+      final second = clock.now(0);
+      expect(second > first, isTrue);
+      expect(second.micros, 200);
+      expect(second.counter, 0, reason: 'a fresh microsecond resets the count');
+    });
+
+    test('observing an older peer timestamp never moves us backwards', () {
+      final clock = HybridClock(physicalNow: () => 5000);
+      final ahead = clock.now(0);
+      clock.observe(const LogicalTs(1, 9));
+      expect(clock.now(0) > ahead, isTrue);
+    });
+
+    test('a timestamp round-trips, and a pre-clock one still parses', () {
+      const stamped = LogicalTs(5, 1, 7);
+      expect(LogicalTs.fromJson(stamped.toJson()).compareTo(stamped), 0);
+      // written by a client built before hybrid clocks: two fields, no counter.
+      final legacy = LogicalTs.fromJson([5, 1]);
+      expect(legacy.micros, 5);
+      expect(legacy.member, 1);
+      expect(legacy.counter, 0);
+      // and such a client reads ours as the wall-clock ts it understands.
+      expect(stamped.toJson()[0], 5);
+      expect(stamped.toJson()[1], 1);
+    });
+  });
 }

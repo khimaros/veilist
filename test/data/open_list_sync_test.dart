@@ -14,6 +14,7 @@ import 'package:veilist/data/list_network.dart';
 import 'package:veilist/data/local_list.dart';
 import 'package:veilist/data/open_list.dart';
 import 'package:veilist/models/crdt.dart';
+import 'package:veilist/models/item_state.dart';
 
 import '../fakes/fake_backend.dart';
 
@@ -77,12 +78,37 @@ class PartialReadNetwork extends FakeListNetwork {
   }
 }
 
+// a fake network that hands back a STALE copy of a member's doc, the way a dht
+// read can: getDHTValue fans out to whichever nodes answer, and a replica that
+// has not caught up returns an earlier version of the subkey.
+class StaleReplicaNetwork extends FakeListNetwork {
+  StaleReplicaNetwork(super.dht);
+
+  /// docs to serve instead of the dht's current ones, until cleared.
+  Map<int, String>? staleDocs;
+
+  @override
+  Future<DocsRead> readDocs(
+    String recordKey,
+    int memberCount, {
+    bool forceRefresh = false,
+  }) async {
+    final stale = staleDocs;
+    if (stale == null) {
+      return super.readDocs(recordKey, memberCount, forceRefresh: forceRefresh);
+    }
+    return (docs: Map.of(stale), complete: true);
+  }
+}
+
 OpenList openAs(
   FakeDht dht,
   CreatedRecord rec, {
   required int member,
   ListNetwork? net,
+  HybridClock? clock,
 }) => OpenList(
+  clock: clock,
   local: LocalList(
     recordKey: rec.recordKey,
     isOwner: false,
@@ -217,6 +243,101 @@ void main() {
       expect(open.awaitingInitialSync, isFalse);
       open.dispose();
     });
+  });
+
+  test('a stale read of a member must not move the view backwards', () {
+    // reported as the list "bouncing" between states. the crdt resolves per
+    // field by greatest ts, but OpenList REPLACES a member's whole doc on every
+    // read, so an older copy from a lagging dht replica regresses that member's
+    // contribution and the fold visibly steps back - then the next read moves it
+    // forward again. a member's doc must be merged into what we already hold, so
+    // the view can only ever move forward.
+    fakeAsync((async) {
+      final dht = FakeDht();
+      final rec = dht.createRecord();
+      // the older copy: item x is still new.
+      final stale = jsonEncode(
+        MemberDoc(
+          contribution: Contribution()
+            ..addItem('x', 'wash dishes', const LogicalTs(5, 0)),
+        ).toJson(),
+      );
+      // the current copy: member 0 has since completed it.
+      writeMember(
+        dht,
+        rec.recordKey,
+        0,
+        Contribution()
+          ..addItem('x', 'wash dishes', const LogicalTs(5, 0))
+          ..setState('x', ItemState.complete, const LogicalTs(10, 0)),
+      );
+
+      final net = StaleReplicaNetwork(dht);
+      final open = openAs(dht, rec, member: 1, net: net);
+      unawaited(open.open());
+      async.flushMicrotasks();
+      expect(open.items.single.state, ItemState.complete);
+
+      // a later read lands on a replica that has not caught up.
+      net.staleDocs = {0: stale};
+      async.elapse(const Duration(seconds: 15));
+      expect(
+        open.items.single.state,
+        ItemState.complete,
+        reason:
+            'a stale read must not un-complete an item the view already has',
+      );
+      open.dispose();
+    });
+  });
+
+  test('a device with a slow clock still wins after seeing a peer', () async {
+    // the reason ordering does not hang on the devices' clocks agreeing: this
+    // device's wall clock is an hour behind its peer's, but it has READ the
+    // peer's edit before making its own, so its edit is causally later and must
+    // win. with plain wall-clock last-writer-wins the peer's older edit would
+    // outrank it and the user's change would silently vanish.
+    final dht = FakeDht();
+    final rec = dht.createRecord();
+    const anHour = 3600 * 1000000;
+
+    // the peer (member 0) completes an item, stamped from a clock an hour fast.
+    writeMember(
+      dht,
+      rec.recordKey,
+      0,
+      Contribution()
+        ..addItem('x', 'wash dishes', const LogicalTs(anHour, 0))
+        ..setState('x', ItemState.complete, const LogicalTs(anHour, 0)),
+    );
+
+    // we open on a device whose clock reads 1000 microseconds past the epoch.
+    final open = openAs(
+      dht,
+      rec,
+      member: 1,
+      clock: HybridClock(physicalNow: () => 1000),
+    );
+    await open.open();
+    await settle();
+    expect(open.items.single.state, ItemState.complete);
+
+    // having seen it, we re-open the item.
+    await open.setItemState(open.items.single.id, ItemState.unstarted);
+    await settle();
+    expect(
+      open.items.single.state,
+      ItemState.unstarted,
+      reason: 'our later edit must outrank the peer despite the slower clock',
+    );
+
+    // and a third party folding both members' docs agrees.
+    final other = openAs(dht, rec, member: 2);
+    await other.open();
+    await settle();
+    expect(other.items.single.state, ItemState.unstarted);
+    open.dispose();
+    other.dispose();
   });
 
   test('a live view reconciles a change whose watch update was dropped', () {

@@ -14,7 +14,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # `--split-per-abi` (how releases are built) adds an abi offset on top of it:
 # arm64 ships as 3000 + 2000 = 5000. the pre-0.3 releases were run-number based
 # and landed at 2005/2006 for arm64, so 3000 clears them.
-version: 0.3.0+3000
+version: 0.4.0+4000
 
 environment:
   sdk: ^3.12.2

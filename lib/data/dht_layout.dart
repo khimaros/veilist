@@ -32,6 +32,20 @@ class MemberDoc {
   Lww<String>? title;
   final Contribution contribution;
 
+  /// merge a freshly read copy of this member's doc into the one we hold,
+  /// per-field greatest ts, so a stale read cannot walk the view backwards.
+  MemberDoc mergedWith(MemberDoc o) => MemberDoc(
+    title: Lww.pick(title, o.title),
+    contribution: contribution.mergedWith(o.contribution),
+  );
+
+  /// every timestamp in this doc, for advancing a [HybridClock] past what we
+  /// have seen from other devices.
+  Iterable<LogicalTs> get timestamps => [
+    if (title != null) title!.ts,
+    ...contribution.timestamps,
+  ];
+
   Map<String, dynamic> toJson() => {
     if (title != null) 't': {'v': title!.value, 't': title!.ts.toJson()},
     'i': contribution.toJson(),

@@ -1,6 +1,0 @@
-* the checkbox now toggles an item between open and complete; press and hold it
-  to pick another state (active or blocked)
-* join a list by scanning its qr code with the camera
-* lighter app icon
-* releases are signed with a persistent key from here on, so future versions
-  update in place
