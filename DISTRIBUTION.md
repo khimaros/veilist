@@ -49,17 +49,28 @@ local data) once, and never again.
 the version lives in `pubspec.yaml` and nowhere else:
 
 ```
-version: 0.3.0+3000
+version: 0.5.0+5000000
 ```
 
-`0.3.0` is the versionName, `3000` the versionCode, following
-`major*1000000 + minor*1000 + patch`. it must only ever increase.
+`0.5.0` is the versionName, `5000000` the versionCode, following
+`(major*10000 + minor*100 + patch) * 10000`. it must only ever increase.
 
 releases are built with `--split-per-abi`, and flutter adds an abi offset to the
-versionCode of each split apk (+1000 armeabi-v7a, +2000 arm64-v8a, +4000 x86_64),
-so the published arm64 apk for 0.3.0 reports **5000**. that is also where the odd
-pre-0.3 numbers came from: the build number was the ci run number (5, 6), and the
-arm64 splits shipped as 2005 and 2006. 3000 clears both.
+versionCode of each split apk (`abi*1000 + build number`, abi being 1
+armeabi-v7a, 2 arm64-v8a, 4 x86_64), so the published arm64 apk for 0.5.0 reports
+**5002000**.
+
+the trailing 10000 in the build number is room for that offset. stepping by less
+lets two different releases produce the SAME versionCode - under the old
+1000-wide steps, 0.5.0's arm64 and 0.6.0's armeabi-v7a would both have been 7000
+- and f-droid indexes versionCodes per package, so it could not tell them apart.
+releases up to 0.4.0 used those steps and shipped arm64 as 6000; before 0.3.0 the
+build number was the ci run number (5, 6), shipping arm64 as 2005 and 2006. the
+current scheme starts well above all of them.
+
+a release must never be built as a universal apk. it carries the build number
+with no offset, which is lower than the split apk already installed, and android
+refuses the downgrade.
 
 the release workflow deliberately does NOT pass `--build-name`/`--build-number`.
 anything ci injects cannot be derived from the source, which would make a rebuild

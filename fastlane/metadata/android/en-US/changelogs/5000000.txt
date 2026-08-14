@@ -1,0 +1,6 @@
+* fixed edits made in quick succession reaching other devices as only the first
+  one, while this device showed them all and said "synced"
+* after losing signal or leaving airplane mode, the app gets itself back on the
+  network instead of sitting disconnected until you restart it
+* edits made while offline go out when you next open the app, even if the app
+  was in the background when the network came back

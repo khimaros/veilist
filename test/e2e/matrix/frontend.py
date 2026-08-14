@@ -15,6 +15,9 @@ record key on the web frontend).
 """
 
 
+import os
+
+
 class SkipFlow(Exception):
     """raised by an action/query a frontend cannot perform, so the matrix records
     skip (not fail) for that flow on that frontend."""
@@ -183,7 +186,10 @@ class Frontend:
     # ---- convergence waits (dht is eventually consistent) ----
     # default implementations poll; widget frontends may override with a native
     # driver waitFor. CONVERGE_S is generous because two live nodes must meet.
-    CONVERGE_S = 120
+    # VEILIST_CONVERGE_S raises it for diagnosis: a flow that passes only with a
+    # longer budget is slow to propagate, not losing edits - a distinction worth
+    # measuring rather than guessing at.
+    CONVERGE_S = int(os.environ.get("VEILIST_CONVERGE_S", 120))
     POLL_S = 2
 
     def wait_for_item(self, text, timeout_s=None):

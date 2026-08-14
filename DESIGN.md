@@ -220,6 +220,27 @@ and updated in place; see DISTRIBUTION.md.
 appiconset, web) from the two svg sources in `assets/icon/`, so the icon is
 edited in one place rather than as fifteen pngs.
 
+## surviving a network change
+
+a phone loses signal, leaves airplane mode, or moves between wifi and mobile
+data, and the os takes every interface away and hands back new ones. veilid does
+not reliably rebuild its network state when that happens: the node stays
+attached but cannot reach anything, flaps online/offline for a few seconds, and
+then sits bootstrapping forever. measured on an emulator, it never recovered -
+the edits queued while it was gone stayed queued, and only restarting the app
+brought it back.
+
+so `VeilidService` runs a watchdog. if the node is unusable for `_kStuckAfter`
+while we mean to be online, it calls veilid's `debug("network restart")`, which
+rebuilds interfaces and sockets with the node still attached, so open records
+and their watches survive. it retries no more than every `_kRecoveryRetry`, each
+attempt bounded by `_kRecoveryTimeout`, and logs every attempt.
+
+a detach/attach is the wrong tool for this and was tried first: `detach()` does
+not return while the network is in this state, so the re-attach never happens,
+and it would drop every open record. the watchdog is gated on `_wantOnline`, so
+a deliberate detach (the e2e harness's offline hook) is never undone.
+
 ## opening a record as a joiner
 
 `createDHTRecord` is local-only, and the creator's `setDHTValue` calls publish
@@ -268,6 +289,19 @@ remaining members' docs arrived - which reads as the app replaying history, when
 it is really the fold gaining one member at a time. a first-ever join also keeps
 its spinner until a complete read, so a scanned link never lands on a half-built
 list.
+
+writes go out one at a time. veilid stamps a write with the sequence number of
+the value the writer held when the write *started*, and the dht keeps the first
+value it receives at a given sequence - so two overlapping writes to one subkey
+both go out at the same sequence and the later one is discarded, however much
+newer, with no error and no retry. three quick taps did exactly that. `_flush`
+therefore keeps a single write loop: an edit made while a write is in flight
+sets a flag instead of starting its own write, and the loop re-sends the doc
+when the current write lands. coalescing is safe because each write carries the
+whole member doc, so the latest send subsumes every skipped one. for the same
+reason `OpenList.dispose` defers `closeRecord` until that loop drains: a write
+issued after the record closes is rejected outright, and leaving a list straight
+after an edit is ordinary use.
 
 the same staleness applies to lists you have not opened. while the app is
 foregrounded, `ListRepository` keeps one watch per roster list (via

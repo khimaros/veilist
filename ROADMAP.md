@@ -283,11 +283,16 @@ on a canvas-rendered ui everywhere. `make test-compliance`.
       writes (probed via the sync chip on linux). the OS-level android flow
       `offline_edits_flush_while_backgrounded` PASSES: real airplane-mode network
       loss + HOME backgrounding, edits still flush to a peer on reconnect.
+      SUPERSEDED by phase 24: that pass was an accident of the write collision
+      fixed in phase 23 (the edits escaped live while the radio was still going
+      down, so nothing flushed from the background). a backgrounded app cannot
+      reach the network at all, and the flow is now
+      `offline_edits_flush_when_reopened`.
 - [x] harness: `VeilidService.setOnline` (detach/attach) exposed via the web hook
       and a flutter-driver requestData handler (test/driver/app.dart) for
       linux/web; android uses OS-level adb (airplane-mode, HOME) instead - no
       in-app backdoor. flows `offline_edits_flush_on_reconnect` (listing) and
-      `..._while_backgrounded`.
+      `offline_edits_flush_when_reopened`.
 - note: detach/attach is an UNFAITHFUL offline primitive - it fully drops the
       node so `attach()` triggers a slow re-bootstrap and a peer misses the last
       edit within the window (the node itself recovers fine). OS-level network
@@ -440,6 +445,162 @@ for pinning specific failure modes.
       by HybridClock unit tests and an end-to-end flow where a device an hour
       behind still wins after reading its peer; disabling clock observation
       makes that test fail, so it has teeth.
+
+## phase 23 - one write at a time
+
+- [x] BUG (both `offline_edits_flush_*` flows, and silently in ordinary use):
+      edits made in quick succession could vanish for every peer while this
+      device showed them and the chip read "synced". each edit writes the WHOLE
+      member doc, and nothing serialized those writes, so three taps produced
+      three overlapping `setDHTValue` calls on one subkey. veilid stamps a write
+      with the sequence number of the value the writer held when the write
+      STARTED, so all three went out at seq=1; the dht keeps the first value it
+      receives at a sequence and discards the rest, however much newer. the
+      node's own log shows it: three docs (len=475/684/689) written in the same
+      second, the fanout settling on len=475, no offline write queued for the
+      others, no error and no retry. fix: `_flush` runs one write at a time and
+      coalesces - the doc is a full snapshot, so an edit made while a write is
+      in flight just re-sends the latest doc once that write lands.
+- [x] BUG: the queued write could then be issued after the record was closed
+      (leaving the list right after an edit), which veilid rejects outright,
+      losing the edit again. `dispose` defers `closeRecord` until the write loop
+      drains. this is what still failed the backgrounded flow after the first
+      fix: while foreground sync is on it holds another ref, so only the
+      backgrounded variant actually closed the record.
+- [x] covered by "edits made in quick succession all reach the dht" (a fake dht
+      that models veilid's sequence numbers), "an edit made during a write goes
+      out before the record closes", and the `rapid_edits_all_reach_peer` e2e
+      flow - which uses no offline hook at all, since being offline was never
+      the cause.
+- [x] e2e harness: per-app logs (`VEILIST_E2E_LOGDIR`), `VEILIST_DART_DEFINES`
+      so `VEILIST_VERBOSE=true` reaches the driver builds, and timestamped
+      control-channel transitions. without the node's own log this bug was
+      invisible - the app reported success at every step.
+- [ ] residual: the write loop is per `OpenList`, so two instances writing the
+      same subkey can still collide - editing an item, going back, and renaming
+      from the listing at once (`ListRepository.renameList` opens its own
+      `OpenList`) is the reachable case. serializing per (record, subkey) in
+      `VeilidListNetwork` would close it at the one choke point every writer
+      passes through.
+
+## phase 24 - node recovery after an os-level network drop (android)
+
+after phase 23 the two `offline_edits_flush_*` flows pass on linux but still
+fail on android, now with NOTHING reaching the peer rather than everything but
+the last edit. that change is expected and not a regression: linux fakes the
+outage with an in-app detach that takes ~5s, so writes used to escape live
+before it took effect (the colliding writes each got a chance), while android
+cuts the network at the os level at once, so every edit is now genuinely
+queued. measured with per-device logcat and veilid's debug log:
+
+- the edits are NOT lost. the flush attempted while offline reports
+  `written_subkeys: ` (empty), so the subkey stays queued, and the previous
+  flow's queued writes later flushed for real (`written_subkeys: 0..=0`) about
+  five minutes after they were made.
+- what fails is the node. after airplane mode is switched off, f's node flaps
+  online/offline several times and settles at `outbound=NeedsBootstrap
+  inbound=NeedsDialInfoConfirmed`, never printing `PublicInternet ready` again
+  for the rest of the flow. raising the budget to 300s (VEILIST_CONVERGE_S)
+  does not help; the writes only flushed once the app restarted and the node
+  attached cleanly.
+- unlike the linux column, nothing tells veilid the network came back: the
+  harness toggles airplane mode, so there is no detach/attach. a phone that
+  loses signal and regains it is the same case (R12/R13), so this is a product
+  question, not only a test one - the app likely has to notice connectivity
+  returning and prod the node rather than wait for it to bootstrap itself.
+
+- [x] measured with `node_recovers_after_network_drop`, which times how long the
+      node takes to become usable again (the sync chip leaving "offline"):
+
+      | tree                                   | recovery |
+      |----------------------------------------|----------|
+      | linux, in-app detach/attach            | 8s       |
+      | android, os radio cut, no recovery     | never within 180s |
+      | android, detach/attach watchdog        | never - the detach does not return |
+      | android, `network restart` watchdog    | 42s      |
+
+- [x] a detach/attach is the WRONG remedy: the watchdog fired four times (39s,
+      79s, 109s, 150s unusable) and not one produced an `Attaching...` line,
+      because `Veilid.instance.detach()` never returns while the network is in
+      this state. it would also tear down every open record.
+- [x] veilid's own `debug("network restart")` is the right one:
+      `network_manager().restart_network()` rebuilds interfaces and sockets with
+      the node still attached, so open records survive. `VeilidService` now runs
+      a watchdog: unusable for `_kStuckAfter` while we mean to be online ->
+      restart the network, retry no more than every `_kRecoveryRetry`, each
+      attempt bounded by a timeout so a call that never returns cannot wedge it.
+      gated on `_wantOnline`, so the e2e harness's deliberate detach (and any
+      future "work offline") is never undone. the log shows the whole chain:
+      `Network restarted` -> `PublicInternet ready in 977ms` -> the queued
+      offline subkey write flushing one second later.
+- [ ] every recovery attempt is logged; if this ever fires in normal use on a
+      healthy network, the threshold is too aggressive and wants raising.
+
+with the watchdog, android now passes `offline_edits_flush_on_reconnect` and
+`rapid_edits_all_reach_peer`. `offline_edits_flush_while_backgrounded` still
+fails, and it is the one case none of this reaches:
+
+- the item added while offline arrives, the state change made just after it does
+  not. the node recovers (`Network restarted` -> `ready in 1.99s`) and then the
+  offline flush retries every ~5s for the rest of the flow, each attempt ending
+  `FanoutResult { kind: Exhausted, consensus_nodes: [], value_nodes: [] }` with
+  every SetValueQ and GetValueQ timing out. the node believes it is ready and
+  can reach nobody.
+- the difference from the flow that now passes is that the app is BACKGROUNDED
+  (HOME) for the whole reconnect. android restricts a backgrounded process's
+  network and cpu, and veilist runs no foreground service, so there is nothing
+  entitled to do this work.
+- phase 14 recorded this flow passing on android, which it did - by accident.
+  before phase 23 the racing writes escaped live during the ~20s the radio took
+  to actually go down, so nothing had to flush from the background at all. now
+  the flow tests what its name claims, and the answer is that we cannot do it.
+
+- [x] decided: a backgrounded app syncs when it is next opened. no foreground
+      service (a permanent notification for a to-do list is a lot to ask) and no
+      WorkManager job. R12 now says this outright, and the flow says what it
+      tests: `offline_edits_flush_while_backgrounded` becomes
+      `offline_edits_flush_when_reopened` - background, reconnect, come back to
+      the app, and every queued edit must reach the peer. what is NOT allowed is
+      losing an edit, and that is what the flow guards.
+- [ ] check the chip does not claim "synced" while writes are still queued in
+      the background - `hasPendingWrites` should keep it on "syncing" (R13), but
+      it is only ever read with a list open, so nothing tests it from the
+      listing.
+
+confirmed on android with the watchdog and the reworked flow:
+
+| flow                              | result |
+|-----------------------------------|--------|
+| `node_recovers_after_network_drop`| PASS - usable again in 55s (42s in an earlier run; never, before) |
+| `offline_edits_flush_on_reconnect`| PASS |
+| `offline_edits_flush_when_reopened`| PASS |
+| `rapid_edits_all_reach_peer`      | PASS |
+
+linux stays 17/17, including the three flows that detach the node deliberately
+(`offline_edit_reaches_peer_after_reconnect`,
+`live_view_reconciles_missed_edits`,
+`peer_offline_misses_edit_then_reconnects`) - they are what proves the
+`_wantOnline` gate keeps the watchdog from re-attaching underneath a deliberate
+detach.
+
+## known-flaky linux collaboration flows
+
+measured after the phase 22 work, 15 collab flows on the linux column: 12 pass.
+the three failures were attributed by re-running them against 729b63d (the
+commit before the conflict-resolution change) in a separate worktree:
+
+- both `offline_edits_flush_*` flows failed on BOTH trees and on BOTH platforms.
+  this section first recorded them as an artifact of the linux detach/attach
+  proxy, which was wrong: they were the real write collision fixed in phase 23,
+  and they pass on linux now. the proxy did make it easy to hit, since the flows
+  edit during the ~5s the node takes to detach, so the writes still fan out.
+- `rename_reaches_listing` is flaky at roughly 1 run in 3 on BOTH trees
+  (current PASS/FAIL/PASS, baseline PASS/FAIL/PASS). it waits for a title to
+  reach a peer's LISTING through foreground sync rather than an open list, which
+  is the slowest propagation path we have. worth hardening the flow (or the
+  path) rather than leaving it as noise that trains people to ignore red. worth
+  re-measuring first: it renames moments after an add, so phase 23 may have
+  fixed it too.
 
 ## phase 21 - honest sync state on join
 

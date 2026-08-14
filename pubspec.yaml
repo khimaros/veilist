@@ -9,12 +9,24 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # ci-injected --build-name/--build-number, so anyone rebuilding a tag - f-droid's
 # rebuilder included - gets the same version out of the same source.
 #
-# the build number follows major*1000000 + minor*1000 + patch and must only ever
-# increase, because android refuses to install a lower versionCode. note that
-# `--split-per-abi` (how releases are built) adds an abi offset on top of it:
-# arm64 ships as 3000 + 2000 = 5000. the pre-0.3 releases were run-number based
-# and landed at 2005/2006 for arm64, so 3000 clears them.
-version: 0.4.0+4000
+# the build number is (major*10000 + minor*100 + patch) * 10000 and must only
+# ever increase, because android refuses to install a lower versionCode.
+#
+# releases are built `--split-per-abi`, and flutter gives each abi's apk its own
+# versionCode: abi*1000 + build number, abi being 1 armeabi-v7a, 2 arm64-v8a, 4
+# x86_64 (FlutterPlugin.kt). publishing several abis REQUIRES distinct codes, so
+# this is not optional - but it means the only rule that matters is that
+# consecutive releases sit more than 4000 apart, above the largest offset.
+# hence the trailing 10000: every release owns a 10000-wide slot its three apks
+# sit inside, and no two releases can ever collide. 1000-wide steps could:
+# 0.5.0's arm64 and 0.6.0's armeabi-v7a would both have been 7000, and f-droid
+# indexes versionCodes per package.
+#
+# the floor is per abi. only arm64 has ever been published (release.yml builds
+# arm64 alone), reaching 6000 at 0.4.0, so armv7 and x86_64 start from nothing
+# whenever they are added. pre-0.3 releases used the ci run number and shipped
+# arm64 as 2005/2006.
+version: 0.5.0+5000000
 
 environment:
   sdk: ^3.12.2

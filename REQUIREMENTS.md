@@ -34,7 +34,10 @@ to it.
   reordered.
 - **R12 local-first.** creating a list and creating/editing items work
   immediately without waiting for the veilid network; changes are saved on the
-  device and sync when connected.
+  device and sync when connected. an edit made offline survives leaving the
+  list, backgrounding the app, and reconnecting, and goes out once the app is
+  open again with a working network - the app runs no foreground service, so it
+  does not promise to sync while it is in the background.
 - **R13 connection + sync status.** the veilid connection state is visible in
   the ui, and while editing a list the ui indicates whether changes are synced,
   syncing, or saved offline.

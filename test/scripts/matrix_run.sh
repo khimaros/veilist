@@ -33,10 +33,18 @@ boot_emu() {
   echo "!! $3 did not finish booting" >&2; return 1
 }
 
+# space-separated K=V pairs added to the driver builds as --dart-define, e.g.
+# VEILIST_DART_DEFINES=VEILIST_VERBOSE=true to stream veilid's own debug log
+# into the per-app logs (VEILIST_E2E_LOGDIR).
+DEFINES=()
+for d in ${VEILIST_DART_DEFINES:-}; do DEFINES+=(--dart-define="$d"); done
+
 FLAGS=()
 APPIUM_PID=""
+LOGCAT_PIDS=()
 cleanup() {
   [ -n "$APPIUM_PID" ] && kill "$APPIUM_PID" 2>/dev/null || true
+  for p in ${LOGCAT_PIDS[@]+"${LOGCAT_PIDS[@]}"}; do kill "$p" 2>/dev/null || true; done
   if want android; then
     adb -s emulator-5554 emu kill >/dev/null 2>&1 || true
     adb -s emulator-5556 emu kill >/dev/null 2>&1 || true
@@ -46,7 +54,8 @@ trap cleanup EXIT
 
 if want linux; then
   echo "== building linux profile driver =="
-  mise exec -- flutter build linux --profile -t test/driver/app.dart
+  mise exec -- flutter build linux --profile -t test/driver/app.dart \
+    ${DEFINES[@]+"${DEFINES[@]}"}
   FLAGS+=(--linux)
 fi
 
@@ -68,7 +77,8 @@ if want android; then
   APPIUM="$ROOT/test/e2e/appium/node_modules/.bin/appium"
   echo "== building driver debug apk =="
   mise exec -- flutter build apk --debug -t test/driver/app.dart \
-    --dart-define=VEILIST_IPV4_ONLY=true --target-platform android-x64
+    --dart-define=VEILIST_IPV4_ONLY=true --target-platform android-x64 \
+    ${DEFINES[@]+"${DEFINES[@]}"}
   # two emulators so the collaboration flows have a peer to join on; with one,
   # every collab flow skips. mirrors the old two-device ui test.
   echo "== booting emulators (alice 5554, bob 5556) =="
@@ -82,6 +92,19 @@ if want android; then
     # runtime permission dialog (a system window the flutter driver cannot see).
     adb -s "$s" shell pm grant com.khimaros.veilist android.permission.CAMERA || true
   done
+  # the android column is otherwise a black box: with VEILIST_E2E_LOGDIR set,
+  # keep each device's app output (and, with VEILIST_VERBOSE, veilid's own log).
+  if [ -n "${VEILIST_E2E_LOGDIR:-}" ]; then
+    mkdir -p "$VEILIST_E2E_LOGDIR"
+    for s in emulator-5554 emulator-5556; do
+      adb -s "$s" logcat -c || true
+      adb -s "$s" logcat -v time flutter:V VeilidFlutter:V '*:S' \
+        > "$VEILIST_E2E_LOGDIR/logcat-$s.log" 2>&1 &
+      LOGCAT_PIDS+=($!)
+    done
+    echo "  logcat: $VEILIST_E2E_LOGDIR/logcat-emulator-555{4,6}.log"
+  fi
+
   echo "== starting appium =="
   env APPIUM_HOME="$APPIUM_HOME" "$APPIUM" --address 127.0.0.1 --port 4723 \
     --base-path / --log-no-colors >/tmp/appium_matrix.log 2>&1 &

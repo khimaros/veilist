@@ -101,6 +101,55 @@ class StaleReplicaNetwork extends FakeListNetwork {
   }
 }
 
+// a fake network that models veilid's sequence numbers. a write is stamped with
+// the sequence of the value the writer held when the write STARTED, and the dht
+// keeps the FIRST value it receives at a given sequence: a later write stamped
+// with the same sequence is discarded however much newer its contents, and the
+// writer is told nothing. two overlapping writes to one subkey therefore lose
+// one of them silently - which is what veilid does in production (a node's log
+// shows three docs going out at seq=1 and only the first surviving).
+class SeqCollidingNetwork extends FakeListNetwork {
+  SeqCollidingNetwork(super.dht);
+
+  final Map<String, int> _committed = {};
+
+  /// writes the dht threw away because they collided with an earlier one.
+  int dropped = 0;
+
+  @override
+  Future<void> writeDoc(String recordKey, int memberIndex, String json) async {
+    final slot = '$recordKey/$memberIndex';
+    final stamped = (_committed[slot] ?? 0) + 1;
+    // the fanout takes long enough for another edit's write to start.
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    if (stamped <= (_committed[slot] ?? 0)) {
+      dropped++;
+      return;
+    }
+    _committed[slot] = stamped;
+    return super.writeDoc(recordKey, memberIndex, json);
+  }
+}
+
+// records the order of writes and closes, so a test can catch a write issued
+// after the record was released - veilid rejects that outright, and the edit is
+// gone with nothing left to retry it.
+class OrderRecordingNetwork extends FakeListNetwork {
+  OrderRecordingNetwork(super.dht);
+
+  final List<String> events = [];
+
+  @override
+  Future<void> writeDoc(String recordKey, int memberIndex, String json) async {
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    events.add('write');
+    return super.writeDoc(recordKey, memberIndex, json);
+  }
+
+  @override
+  Future<void> closeRecord(String recordKey) async => events.add('close');
+}
+
 OpenList openAs(
   FakeDht dht,
   CreatedRecord rec, {
@@ -124,6 +173,64 @@ void writeMember(FakeDht dht, String key, int index, Contribution c) =>
     dht.writeDoc(key, index, jsonEncode(MemberDoc(contribution: c).toJson()));
 
 void main() {
+  test('edits made in quick succession all reach the dht', () async {
+    // three taps in a row: each ui handler starts its own write without waiting
+    // for the previous one, so the writes overlap. they all carry the whole
+    // member doc, so the last one is a superset of the others - but the dht
+    // stamps each with the sequence it saw when it started, keeps the first,
+    // and silently drops the rest. the peer then never sees the later edits
+    // while this device shows them and reports "synced".
+    final dht = FakeDht();
+    final rec = dht.createRecord();
+    final net = SeqCollidingNetwork(dht);
+    final open = openAs(dht, rec, member: 0, net: net);
+    await open.open();
+    await settle();
+
+    await Future.wait([
+      open.addItem('one'),
+      open.addItem('two'),
+      open.addItem('three'),
+    ]);
+    await settle();
+
+    final stored = MemberDoc.fromJson(
+      jsonDecode(dht.readDocs(rec.recordKey)[0]!) as Map<String, dynamic>,
+    );
+    expect(
+      foldDocs([stored]).items.map((i) => i.text),
+      containsAll(['one', 'two', 'three']),
+    );
+    expect(net.dropped, 0, reason: 'a write was discarded by the dht');
+    open.dispose();
+  });
+
+  test('an edit made during a write goes out before the record closes', () async {
+    // edit, then straight back to the listing - ordinary use. the second edit is
+    // queued behind the first write, and closing the record before it goes out
+    // would lose it: a write to a closed record fails outright.
+    final dht = FakeDht();
+    final rec = dht.createRecord();
+    final net = OrderRecordingNetwork(dht);
+    final open = openAs(dht, rec, member: 0, net: net);
+    await open.open();
+    await settle();
+
+    unawaited(open.addItem('one'));
+    unawaited(open.addItem('two'));
+    open.dispose();
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+
+    expect(net.events, ['write', 'write', 'close']);
+    final stored = MemberDoc.fromJson(
+      jsonDecode(dht.readDocs(rec.recordKey)[0]!) as Map<String, dynamic>,
+    );
+    expect(
+      foldDocs([stored]).items.map((i) => i.text),
+      containsAll(['one', 'two']),
+    );
+  });
+
   test('a member reorder converges for another reader', () async {
     final dht = FakeDht();
     final rec = dht.createRecord();

@@ -5,6 +5,7 @@ raises SkipFlow (from the interface), so the flow is recorded skip, not fail.
 each flow maps to a product requirement (see REQUIREMENTS.md). collaboration
 flows take a second frontend via f.peer()."""
 
+import time
 import uuid
 
 # a concurrent-edit round must converge well under veilid's 30s fallback change
@@ -19,6 +20,11 @@ CONCURRENT_ROUNDS = 6
 # a local state edit only has to reach this device's own screen, so it needs no
 # network round-trip - just enough slack for a slow emulator to repaint.
 STATE_S = 20
+
+# how long a node may take to become usable again after the network comes back.
+# generous on purpose: this measures recovery rather than asserting a target, and
+# everything queued while the network was gone waits on it.
+RECOVER_S = 180
 
 
 def unique(prefix):
@@ -331,6 +337,63 @@ def offline_multi_edits_reach_peer_after_reconnect(f):  # R12 - deterministic
     b.wait_for_state("seed", "complete", timeout_s=45)  # the final edit must land
 
 
+def _wait_until_node_online(f, timeout_s):
+    """wait until the sync chip stops reading "offline": the node is attached and
+    usable again. deliberately weaker than waiting for "synced", which also needs
+    a complete network read - a separate concern, and one that does not land on
+    android emulators (see ROADMAP phase 24)."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if f.sync_status() in ("syncing", "synced"):
+            return
+        time.sleep(2)
+    raise AssertionError(f"node still offline {timeout_s}s after the network returned")
+
+
+def node_recovers_after_network_drop(f):  # R12/R13 - single device
+    # the network goes away and comes back. the node has to become usable again
+    # on its own: every edit queued while it was gone waits on that, so a node
+    # that settles into a broken state after the radio returns strands them all.
+    # android cuts the radio at the os level, which is the real case; the widget
+    # frontends elsewhere detach the node instead.
+    #
+    # reports how long recovery took, so this stays a measurement rather than a
+    # bare pass/fail.
+    name = unique("recover")
+    _new_list(f, name)
+    f.add_item("seed")
+    f.share()  # publish it, so the sync chip reports real network state
+    # reopen: sharing swaps the local placeholder record for a real dht one, and
+    # the open page is still bound to the local-only network until it does.
+    f.go_listing()
+    f.open_list(name)
+    _wait_until_node_online(f, RECOVER_S)
+    f.go_offline()
+    f.wait_for_sync_status("offline", timeout_s=60)
+    f.toggle_item("seed")  # queued: it can only flush once the node is back
+    f.go_online()
+    start = time.time()
+    _wait_until_node_online(f, RECOVER_S)
+    print(f"  node usable again in {int(time.time() - start)}s", flush=True)
+
+
+def rapid_edits_all_reach_peer(f):  # R4/R12
+    # three edits in quick succession while fully online. every edit writes the
+    # WHOLE member doc, so two writes that overlap are stamped with the same dht
+    # sequence and only the first survives - the later ones are discarded and
+    # the writer is told nothing. the peer would then be missing edits this
+    # device shows and calls "synced".
+    b = f.peer()
+    name = unique("rapid")
+    _share_and_join(f, b, name, "seed")
+    f.add_item("rapid-1")
+    f.add_item("rapid-2")
+    f.toggle_item("seed")
+    b.wait_for_item("rapid-1")
+    b.wait_for_item("rapid-2")
+    b.wait_for_state("seed", "complete")
+
+
 def offline_edits_flush_on_reconnect(f):  # R12
     # a device makes several edits while offline, then sits on the listing with
     # the list closed. once it reconnects it must flush every queued edit to a
@@ -350,9 +413,34 @@ def offline_edits_flush_on_reconnect(f):  # R12
     b.wait_for_state("seed", "complete")
 
 
-def offline_edits_flush_while_backgrounded(f):  # R12
-    # the same, but the device is backgrounded (foreground sync stopped) when it
-    # reconnects, so the flush cannot rely on foreground sync being active.
+def offline_last_edit_survives_close(f):  # R12 - diagnostic
+    # the offline_edits_flush_* flows fail with the ADDS reaching the peer but the
+    # last edit (a state change) never arriving. all three edits live in one
+    # subkey value, so the peer must have read a version of f's doc that lacked
+    # the toggle. this narrows where it was lost: replay the same sequence, then
+    # reopen the list on f while STILL OFFLINE, so the view can only come from
+    # f's own local record. if the toggle is missing here it never reached the
+    # record and the peer was never at fault.
+    b = f.peer()
+    name = unique("offlsurv")
+    _share_and_join(f, b, name, "seed")
+    f.go_offline()
+    f.add_item("off-1")
+    f.add_item("off-2")
+    f.toggle_item("seed")  # the last edit before the record is closed
+    f.go_listing()  # closes the record with the write possibly still in flight
+    f.open_list(name)  # still offline: a pure local-record read
+    f.wait_for_item("off-2", timeout_s=30)  # the adds survived the close
+    f.wait_for_state("seed", "complete", timeout_s=30)  # ...and so must the toggle
+    f.go_online()
+
+
+def offline_edits_flush_when_reopened(f):  # R12
+    # the same, but the device is backgrounded when the network comes back, so
+    # nothing can go out at the time: android restricts a backgrounded process's
+    # network and we run no foreground service (R12 says so). what must hold is
+    # that none of it is lost - opening the app again flushes every queued edit
+    # to the peer.
     b = f.peer()
     name = unique("offlbg")
     _share_and_join(f, b, name, "seed")
@@ -360,11 +448,11 @@ def offline_edits_flush_while_backgrounded(f):  # R12
     f.add_item("bg-1")
     f.toggle_item("seed")  # new -> complete
     f.go_listing()
-    f.set_foreground(False)  # background: stop foreground sync
-    f.go_online()  # reconnect while backgrounded
+    f.set_foreground(False)  # background: foreground sync stops
+    f.go_online()  # reconnect while backgrounded: nothing need flush yet
+    f.set_foreground(True)  # the user comes back to the app
     b.wait_for_item("bg-1")
     b.wait_for_state("seed", "complete")
-    f.set_foreground(True)  # restore for a clean teardown
 
 
 def member_can_rename(f):  # rename by a member
@@ -420,6 +508,7 @@ SINGLE = [
     ("scan_link_opens_camera", scan_link_opens_camera),
     ("delete_list", delete_list),
     ("connection_status_visible", connection_status_visible),
+    ("node_recovers_after_network_drop", node_recovers_after_network_drop),
 ]
 
 COLLAB = [
@@ -433,8 +522,10 @@ COLLAB = [
     ("live_view_reconciles_missed_edits", live_view_reconciles_missed_edits),
     ("peer_offline_misses_edit_then_reconnects", peer_offline_misses_edit_then_reconnects),
     ("offline_multi_edits_reach_peer_after_reconnect", offline_multi_edits_reach_peer_after_reconnect),
+    ("rapid_edits_all_reach_peer", rapid_edits_all_reach_peer),
     ("offline_edits_flush_on_reconnect", offline_edits_flush_on_reconnect),
-    ("offline_edits_flush_while_backgrounded", offline_edits_flush_while_backgrounded),
+    ("offline_last_edit_survives_close", offline_last_edit_survives_close),
+    ("offline_edits_flush_when_reopened", offline_edits_flush_when_reopened),
     ("member_can_rename", member_can_rename),
     ("rename_reaches_listing", rename_reaches_listing),
     ("reorder_while_closed_syncs_on_reopen", reorder_while_closed_syncs_on_reopen),

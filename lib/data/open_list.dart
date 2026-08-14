@@ -65,6 +65,11 @@ class OpenList extends ChangeNotifier {
   SyncStatus _sync = SyncStatus.offline;
   int _ticks = 0;
   bool _wasReady = false;
+  // the running write loop (null when idle), and whether an edit arrived while
+  // it was writing and so needs another pass. see _flush.
+  Future<void>? _writes;
+  bool _writeAgain = false;
+  bool _disposed = false;
   Timer? _syncTimer;
   VoidCallback? _onReadinessChanged;
   StreamSubscription<DocChange>? _changeSub;
@@ -155,6 +160,9 @@ class OpenList extends ChangeNotifier {
   // synced once local writes have flushed to the network; syncing while any are
   // still pending; offline when not connected and nothing is pending.
   Future<void> _updateSync() async {
+    // a write can outlive the page that made it (see dispose), so it must not
+    // notify a disposed notifier.
+    if (_disposed) return;
     // a list that has not been shared lives only on this device.
     if (!local.published) {
       if (_sync != SyncStatus.local) {
@@ -287,15 +295,37 @@ class OpenList extends ChangeNotifier {
   }
 
   // fold, notify, then push our doc to the network.
-  Future<void> _flush() async {
+  //
+  // one write at a time: the dht stamps a write with the sequence number of the
+  // value the writer held when the write STARTED, so two overlapping writes to
+  // our subkey both go out at the same sequence and only the first survives -
+  // the later, newer doc is discarded and nothing tells us. our doc is a full
+  // snapshot, so an edit made while a write is in flight does not need a write
+  // of its own: re-sending the latest doc once that write lands carries it.
+  Future<void> _flush() {
     _refold();
     _sync = SyncStatus.syncing;
     notifyListeners();
-    await _net.writeDoc(
-      local.recordKey,
-      local.memberIndex,
-      jsonEncode(_mine.toJson()),
-    );
+    if (_writes != null) {
+      _writeAgain = true;
+      return _writes!;
+    }
+    return _writes = _writeUntilQuiet();
+  }
+
+  Future<void> _writeUntilQuiet() async {
+    try {
+      do {
+        _writeAgain = false;
+        await _net.writeDoc(
+          local.recordKey,
+          local.memberIndex,
+          jsonEncode(_mine.toJson()),
+        );
+      } while (_writeAgain);
+    } finally {
+      _writes = null;
+    }
     unawaited(_updateSync());
   }
 
@@ -335,13 +365,24 @@ class OpenList extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _syncTimer?.cancel();
     if (_onReadinessChanged != null) {
       _net.readiness.removeListener(_onReadinessChanged!);
     }
     _changeSub?.cancel();
-    // best-effort close; ignore if the node is already gone.
-    unawaited(_net.closeRecord(local.recordKey).catchError((_) {}));
+    // let a queued write go out before releasing the record: leaving the list
+    // right after an edit is ordinary (edit, then straight back to the listing),
+    // and a write issued after the record closes fails outright - losing the
+    // edit with nothing left to retry it. best-effort: ignore a node already
+    // gone.
+    final pending = _writes;
+    unawaited(
+      (pending == null
+              ? _net.closeRecord(local.recordKey)
+              : pending.then((_) => _net.closeRecord(local.recordKey)))
+          .catchError((_) {}),
+    );
     super.dispose();
   }
 }

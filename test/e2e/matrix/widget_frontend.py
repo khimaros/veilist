@@ -180,14 +180,22 @@ class WidgetFrontend(Frontend):
         self.ui.home(self.d)
 
     # e2e control channel (driver requestData -> test/driver/app.dart handler).
+    # each transition is stamped so a failing run can be lined up against the
+    # per-app logs (VEILIST_E2E_LOGDIR), which carry the same wall clock.
+    def _control(self, command):
+        import time
+
+        print(f"  {time.strftime('%H:%M:%S')} control: {command}", flush=True)
+        self.ui.request_data(self.d, command)
+
     def go_offline(self):
-        self.ui.request_data(self.d, "offline")
+        self._control("offline")
 
     def go_online(self):
-        self.ui.request_data(self.d, "online")
+        self._control("online")
 
     def set_foreground(self, foreground):
-        self.ui.request_data(self.d, "foreground" if foreground else "background")
+        self._control("foreground" if foreground else "background")
 
     # ---- queries ----
     def list_present(self, name):
