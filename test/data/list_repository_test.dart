@@ -10,6 +10,20 @@ ListRepository make(FakeDht dht, {ListStore? store}) => ListRepository(
   network: FakeListNetwork(dht),
 );
 
+// records which subkey each write went to, so a test can see the repository
+// refresh a record rather than only read it.
+class WriteRecordingNetwork extends FakeListNetwork {
+  WriteRecordingNetwork(super.dht);
+
+  final List<({String key, int member})> writes = [];
+
+  @override
+  Future<void> writeDoc(String recordKey, int memberIndex, String json) {
+    writes.add((key: recordKey, member: memberIndex));
+    return super.writeDoc(recordKey, memberIndex, json);
+  }
+}
+
 // let broadcast change events flush to watchers.
 Future<void> settle() async {
   await Future<void>.delayed(Duration.zero);
@@ -292,6 +306,33 @@ void main() {
   );
 
   // the foreground sync iterates the roster with awaits between entries; a
+  test('foreground sync republishes a record nothing has written to', () async {
+    // veilid's storage nodes hold other people's records under an lru, so a
+    // record nobody writes to is eventually evicted from every node holding it
+    // and the members can no longer reach each other. re-writing this device's
+    // own doc is what keeps it there.
+    final dht = FakeDht();
+    final net = WriteRecordingNetwork(dht);
+    final repo = ListRepository(store: FakeListStore(), network: net);
+    await repo.load();
+    final list = await repo.shareList(await repo.createList('groceries'));
+    final published = repo.lists.single;
+    net.writes.clear();
+
+    published.republishedAt = 0; // nothing has written to it since
+    await repo.startForegroundSync();
+    await settle();
+    expect(net.writes, [(key: list.recordKey, member: 0)]);
+
+    // and not on every sync: only once the interval has passed again.
+    net.writes.clear();
+    await repo.stopForegroundSync();
+    await repo.startForegroundSync();
+    await settle();
+    expect(net.writes, isEmpty);
+    await repo.stopForegroundSync();
+  });
+
   // create/join/share re-key or another readiness-triggered sync mutating the
   // roster mid-iteration must not throw "concurrent modification".
   test('roster mutation during a foreground sync does not crash', () async {

@@ -38,9 +38,16 @@ to it.
   list, backgrounding the app, and reconnecting, and goes out once the app is
   open again with a working network - the app runs no foreground service, so it
   does not promise to sync while it is in the background.
+- **R16 no silent data loss.** nothing but a deliberate delete removes items
+  from a list. a device never publishes less for its own member slot than it
+  published before, so a read that fails, comes back partial, or comes back
+  empty - including a record the network has forgotten while everyone was away -
+  can never turn the next edit into a wipe. this device's own contribution is
+  kept on-device, not only in the dht record.
 - **R13 connection + sync status.** the veilid connection state is visible in
   the ui, and while editing a list the ui indicates whether changes are synced,
-  syncing, or saved offline.
+  syncing, or saved offline. "synced" means data was actually exchanged: a read
+  that reached nothing is never reported as being in sync.
 - **R14 theme.** dark mode is the default, with a material-you (device dynamic)
   accent color where available and a seed-color fallback.
 

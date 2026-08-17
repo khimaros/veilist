@@ -131,6 +131,38 @@ class SeqCollidingNetwork extends FakeListNetwork {
   }
 }
 
+// a fake network that models the dht having forgotten a record's contents: the
+// record still opens and the inspect still answers, but no subkey holds a value
+// any more. veilid's storage nodes keep other people's records under an lru
+// capped at 128 records per node, so a list nothing has written to for days is
+// evicted everywhere while each member's own device still holds its copy. the
+// read is not partial - the network genuinely reports nothing - so the layer
+// reports it complete.
+class ForgetfulNetwork extends FakeListNetwork {
+  ForgetfulNetwork(super.dht);
+
+  @override
+  Future<DocsRead> readDocs(
+    String recordKey,
+    int memberCount, {
+    bool forceRefresh = false,
+  }) async => (docs: const <int, String>{}, complete: true);
+}
+
+// a fake network whose reads fail outright, the way an open can when the node
+// is not reachable yet: openDHTRecord on a record this node has not resolved
+// comes back TryAgain, and the inspect behind a read can throw on its own.
+class UnreadableNetwork extends FakeListNetwork {
+  UnreadableNetwork(super.dht);
+
+  @override
+  Future<DocsRead> readDocs(
+    String recordKey,
+    int memberCount, {
+    bool forceRefresh = false,
+  }) async => throw StateError('record not reachable');
+}
+
 // records the order of writes and closes, so a test can catch a write issued
 // after the record was released - veilid rejects that outright, and the edit is
 // gone with nothing left to retry it.
@@ -156,15 +188,18 @@ OpenList openAs(
   required int member,
   ListNetwork? net,
   HybridClock? clock,
+  bool owner = false,
+  String? localDoc,
 }) => OpenList(
   clock: clock,
   local: LocalList(
     recordKey: rec.recordKey,
-    isOwner: false,
+    isOwner: owner,
     writer: rec.pool[member],
     memberIndex: member,
     title: '',
     addedAt: 0,
+    localDoc: localDoc,
   ),
   network: net ?? FakeListNetwork(dht),
 );
@@ -182,6 +217,11 @@ void main() {
     // while this device shows them and reports "synced".
     final dht = FakeDht();
     final rec = dht.createRecord();
+    // publishing a list writes the creator's doc to slot 0 before anyone can
+    // use it, so a live record always holds at least that one. a record with no
+    // doc at all tells an opener nothing about what its own slot holds, and it
+    // declines to write rather than publish a snapshot over it.
+    writeMember(dht, rec.recordKey, 0, Contribution());
     final net = SeqCollidingNetwork(dht);
     final open = openAs(dht, rec, member: 0, net: net);
     await open.open();
@@ -211,6 +251,7 @@ void main() {
     // would lose it: a write to a closed record fails outright.
     final dht = FakeDht();
     final rec = dht.createRecord();
+    writeMember(dht, rec.recordKey, 0, Contribution());
     final net = OrderRecordingNetwork(dht);
     final open = openAs(dht, rec, member: 0, net: net);
     await open.open();
@@ -493,5 +534,148 @@ void main() {
       );
       open.dispose();
     });
+  });
+
+  test(
+    'an edit must not publish a doc that erases this member\'s own items',
+    () async {
+      // a list left alone for days: the storage nodes holding the record have
+      // evicted it, so the read comes back with nothing. this device's own slot -
+      // the one it is the sole authority for - is therefore not loaded, and every
+      // write carries a full snapshot of it. the next edit publishes a doc holding
+      // only that edit, and because an absent assertion is not a tombstone the
+      // earlier items simply cease to exist for every member.
+      final dht = FakeDht();
+      final rec = dht.createRecord();
+      writeMember(
+        dht,
+        rec.recordKey,
+        1,
+        Contribution()
+          ..addItem('a', 'milk', const LogicalTs(1, 1))
+          ..addItem('b', 'eggs', const LogicalTs(2, 1)),
+      );
+
+      final open = openAs(dht, rec, member: 1, net: ForgetfulNetwork(dht));
+      await open.open();
+      await settle();
+      await open.addItem('bread');
+      await settle();
+
+      final stored = MemberDoc.fromJson(
+        jsonDecode(dht.readDocs(rec.recordKey)[1]!) as Map<String, dynamic>,
+      );
+      expect(
+        foldDocs([stored]).items.map((i) => i.text),
+        containsAll(['milk', 'eggs']),
+        reason: 'the edit overwrote this member\'s whole contribution',
+      );
+      open.dispose();
+    },
+  );
+
+  test('a read that found nothing must not report the list as synced', () async {
+    // the network answering "no values here" is not the same as this list being
+    // empty and up to date. calling it synced hides the failure - the two
+    // devices sit there saying they agree while neither has read the other - and
+    // it marks a joined list editable with nothing loaded to edit, which is what
+    // turns the next tap into a wipe.
+    final dht = FakeDht();
+    final rec = dht.createRecord();
+    writeMember(
+      dht,
+      rec.recordKey,
+      0,
+      Contribution()..addItem('a', 'milk', const LogicalTs(1, 0)),
+    );
+
+    final open = openAs(dht, rec, member: 1, net: ForgetfulNetwork(dht));
+    await open.open();
+    await settle();
+
+    expect(open.syncStatus, isNot(SyncStatus.synced));
+    expect(
+      open.canEdit,
+      isFalse,
+      reason: 'nothing was loaded, so there is nothing to edit safely',
+    );
+    open.dispose();
+  });
+
+  test(
+    'this device\'s own doc survives a network that forgot the record',
+    () async {
+      // the copy of our own doc kept on-device is what keeps a list usable when
+      // the record has aged out of the network: it stays editable, and the next
+      // write is a superset of what was already published rather than a snapshot
+      // of nothing.
+      final dht = FakeDht();
+      final rec = dht.createRecord();
+      final mine = MemberDoc(
+        contribution: Contribution()
+          ..addItem('a', 'milk', const LogicalTs(1, 1)),
+      );
+
+      final open = openAs(
+        dht,
+        rec,
+        member: 1,
+        net: ForgetfulNetwork(dht),
+        localDoc: jsonEncode(mine.toJson()),
+      );
+      await open.open();
+      await settle();
+      expect(open.items.map((i) => i.text), ['milk']);
+      expect(open.canEdit, isTrue);
+
+      await open.addItem('bread');
+      await settle();
+
+      final stored = MemberDoc.fromJson(
+        jsonDecode(dht.readDocs(rec.recordKey)[1]!) as Map<String, dynamic>,
+      );
+      expect(
+        foldDocs([stored]).items.map((i) => i.text),
+        containsAll(['milk', 'bread']),
+      );
+      open.dispose();
+    },
+  );
+
+  test('an owner whose doc failed to load must not overwrite it', () async {
+    // the owner is always allowed to edit, without any check that the doc it is
+    // about to overwrite was ever loaded. an open that could not read - the node
+    // still resolving the record, an inspect that threw - leaves the doc empty
+    // and the first edit destroys the list.
+    final dht = FakeDht();
+    final rec = dht.createRecord();
+    writeMember(
+      dht,
+      rec.recordKey,
+      0,
+      Contribution()..addItem('a', 'milk', const LogicalTs(1, 0)),
+    );
+
+    final open = openAs(
+      dht,
+      rec,
+      member: 0,
+      owner: true,
+      net: UnreadableNetwork(dht),
+    );
+    await open.open();
+    await settle();
+    await open.addItem('bread');
+    await settle();
+
+    final stored = MemberDoc.fromJson(
+      jsonDecode(dht.readDocs(rec.recordKey)[0]!) as Map<String, dynamic>,
+    );
+    expect(
+      foldDocs([stored]).items.map((i) => i.text),
+      contains('milk'),
+      reason: 'the edit overwrote the owner\'s whole contribution',
+    );
+    open.dispose();
   });
 }

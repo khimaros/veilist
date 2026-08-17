@@ -4,3 +4,8 @@
   network instead of sitting disconnected until you restart it
 * edits made while offline go out when you next open the app, even if the app
   was in the background when the network came back
+* fixed a list emptying itself: after everyone had been away for a while the
+  app could no longer read the shared list, said "synced" anyway, and the next
+  edit published an empty list over everyone's items
+* your own items are now kept on your device as well as in the shared list, and
+  a list nobody edits is refreshed in the background so it stays reachable

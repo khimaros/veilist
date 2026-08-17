@@ -20,6 +20,13 @@ import 'share_link.dart';
 /// veilid's per-node open-record limit; the rest still sync when opened.
 const int kMaxForegroundWatches = 32;
 
+/// how long a published list may go without this device re-writing its own doc.
+/// veilid's storage nodes hold other people's records under an lru (128 records
+/// a node by default), so a record nobody writes to is eventually evicted from
+/// every node holding it and the members can no longer reach each other, each
+/// still holding its own copy. nothing else refreshes it.
+const Duration kRepublishInterval = Duration(hours: 6);
+
 class ListRepository extends ChangeNotifier {
   ListRepository({required ListStore store, required ListNetwork network})
     : _store = store,
@@ -38,6 +45,11 @@ class ListRepository extends ChangeNotifier {
   // list, so the roster stays current without opening every list by hand.
   bool _foreground = false;
   final Set<String> _watched = {};
+  // records with a live OpenList, counted: one list can have two (an open
+  // detail page, and a rename from the listing opening its own). a republish
+  // must not race a list's own writes - two writes to one subkey go out at the
+  // same sequence and the dht silently keeps only the first (see OpenList).
+  final Map<String, int> _openCounts = {};
   StreamSubscription<DocChange>? _dirtySub;
   VoidCallback? _onReadinessChanged;
 
@@ -98,7 +110,10 @@ class ListRepository extends ChangeNotifier {
       ..writer = created.pool[0]
       ..memberPool = created.pool
       ..published = true
-      ..localDoc = null;
+      // the doc stays on-device after publishing: it is this device's copy of
+      // its own slot, and the record store is no longer the only place it lives.
+      ..localDoc = doc
+      ..republishedAt = _nowMicros();
     list.assignedSlots.add(0);
     await _store.remove(oldKey);
     await _store.save(list);
@@ -181,11 +196,37 @@ class ListRepository extends ChangeNotifier {
     notifyListeners();
   }
 
-  OpenList open(LocalList list) => OpenList(
-    local: list,
-    network: _networkFor(list),
-    onTitleChanged: (t) => _updateCachedTitle(list, t),
-  );
+  OpenList open(LocalList list) {
+    // the key is captured: publishing re-keys the list, and this open must be
+    // released under the key it was taken out on.
+    final key = list.recordKey;
+    _openCounts.update(key, (n) => n + 1, ifAbsent: () => 1);
+    return OpenList(
+      local: list,
+      network: _networkFor(list),
+      onTitleChanged: (t) => _updateCachedTitle(list, t),
+      onDocChanged: (json) => _saveDoc(list, json),
+      onClosed: () => _release(key),
+    );
+  }
+
+  void _release(String key) {
+    final remaining = (_openCounts[key] ?? 0) - 1;
+    if (remaining > 0) {
+      _openCounts[key] = remaining;
+    } else {
+      _openCounts.remove(key);
+    }
+  }
+
+  // keep this device's own doc on-device, alongside the dht record rather than
+  // only inside it, and note that the record was just written to.
+  void _saveDoc(LocalList list, String json) {
+    list
+      ..localDoc = json
+      ..republishedAt = _nowMicros();
+    unawaited(_store.save(list));
+  }
 
   // an unpublished list is backed by a local-only network so its edits persist
   // on-device without touching the dht; a published one uses the real network.
@@ -203,18 +244,15 @@ class ListRepository extends ChangeNotifier {
   /// wins field). reuses OpenList so the write, fold and cache update match the
   /// detail page, and publishes so other clients see it via foreground sync.
   Future<void> renameList(LocalList list, String title) async {
-    final open = OpenList(
-      local: list,
-      network: _networkFor(list),
-      onTitleChanged: (t) => _updateCachedTitle(list, t),
-    );
+    final opened = open(list);
     try {
-      await open.open();
-      // a joined list must have synced at least once before it is editable.
-      if (!open.canEdit) await open.refresh().catchError((_) {});
-      await open.setTitle(title);
+      await opened.open();
+      // a list must have synced at least once before it is editable: renaming
+      // writes this device's whole doc, so it must hold that doc first.
+      if (!opened.canEdit) await opened.refresh().catchError((_) {});
+      await opened.setTitle(title);
     } finally {
-      open.dispose();
+      opened.dispose();
     }
   }
 
@@ -294,9 +332,24 @@ class ListRepository extends ChangeNotifier {
         list,
         foldDocs(read.docs.values.map(_decodeDoc)).title,
       );
+      await _republishIfStale(list);
     } catch (_) {
       // unreachable for now; a later change or reconnect retries.
     }
+  }
+
+  // re-write this device's own doc so the storage nodes holding the record keep
+  // it. a record nobody writes to is evicted, and then the members can no
+  // longer reach each other however online they are. skipped while the list is
+  // open, so this never races that list's own writes.
+  Future<void> _republishIfStale(LocalList list) async {
+    final doc = list.localDoc;
+    if (doc == null || _openCounts.containsKey(list.recordKey)) return;
+    final now = _nowMicros();
+    if (now - list.republishedAt < kRepublishInterval.inMicroseconds) return;
+    await _network.writeDoc(list.recordKey, list.memberIndex, doc);
+    list.republishedAt = now;
+    await _store.save(list);
   }
 
   int? _nextFreeSlot(LocalList list) {

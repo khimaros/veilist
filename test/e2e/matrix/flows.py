@@ -476,6 +476,30 @@ def rename_reaches_listing(f):  # rename reaches a peer's listing via fg sync
     b.wait_for_list(renamed)
 
 
+def edits_survive_the_owner_returning_cold(f):  # R16 - the reported wipe
+    # a member edits a list while the owner is away for a long time; both come
+    # back and the owner edits. no write may publish less than that device
+    # already published: the owner's doc is written whole, so an open that did
+    # not load it would go out as a snapshot holding only the new edit and take
+    # every earlier item with it - which is how a real list emptied on two
+    # devices at once. the network forgetting the record (what made the read
+    # come back empty in the first place) needs storage nodes to evict over
+    # days and cannot be provoked here, so this covers the cold-restart half.
+    b = f.peer()
+    name = unique("survive")
+    _share_and_join(f, b, name, "seed")
+    f.restart()  # the owner is gone; b edits without it
+    b.add_item("while-away")
+    f.open_list(name)
+    f.wait_for_item("while-away", timeout_s=90)
+    f.add_item("after-return")
+    b.wait_for_item("after-return", timeout_s=90)
+    # nothing may have vanished from either device.
+    for item in ("seed", "while-away", "after-return"):
+        f.wait_for_item(item, timeout_s=30)
+        b.wait_for_item(item, timeout_s=30)
+
+
 def reorder_while_closed_syncs_on_reopen(f):  # the reopen resync bug
     b = f.peer()
     name = unique("closed")
@@ -528,6 +552,7 @@ COLLAB = [
     ("offline_edits_flush_when_reopened", offline_edits_flush_when_reopened),
     ("member_can_rename", member_can_rename),
     ("rename_reaches_listing", rename_reaches_listing),
+    ("edits_survive_the_owner_returning_cold", edits_survive_the_owner_returning_cold),
     ("reorder_while_closed_syncs_on_reopen", reorder_while_closed_syncs_on_reopen),
 ]
 

@@ -583,6 +583,83 @@ linux stays 17/17, including the three flows that detach the node deliberately
 `_wantOnline` gate keeps the watchdog from re-attaching underneath a deliberate
 detach.
 
+## phase 25 - a member never publishes less than it published (R16)
+
+reported from real use: a mobile client made a batch of edits while the owner
+(linux) was offline for days. both came back, sat there without ever
+synchronizing, and then the list emptied completely on both devices. the chain,
+confirmed by three tests written against it before any fix:
+
+- **the network forgot the record.** storage nodes hold other people's records
+  under an lru capped at `remote_max_records` (128 a node off-web,
+  `veilid_config.rs`), and nothing in veilist ever re-wrote a record, so a list
+  nobody touched for days was evicted from every node holding it. the same
+  eviction logs as "RecordIndex(remote): Consistency failure, not enough room
+  made for new record" - veilid's own `make_room_for_record` only counts bytes,
+  never the record-count limit, so a normal lru eviction takes a should-not-
+  happen branch. cosmetic there, the trigger here.
+- **an empty network answer counted as a complete read.** `readDocs` chose which
+  subkeys to read from the network inspect and set `complete = fromNetwork`, so
+  all-null network seqs meant zero subkeys read and a read reported as the whole
+  picture. same for a partial answer: a member's subkey the network had lost was
+  skipped without clearing `complete`.
+- **so both devices declared themselves synced** having read nothing at all -
+  the "waited for them to synchronize but they never did" part, with the chip
+  saying they already had.
+- **the next edit wiped the slot.** every write carries a FULL snapshot of
+  `_mine`, and `_mine` was `putIfAbsent(memberIndex, MemberDoc.new)` - a fresh
+  empty doc when the slot never loaded. an absent assertion is not a tombstone
+  (`foldList` drops any item with no `present`), so everything that device ever
+  contributed ceased to exist for every member. nothing could restore it:
+  `refresh` deliberately never merged our own slot back, we are its only writer,
+  and `localDoc` was nulled at publish, so the record store held the only copy.
+- **why both devices, and why "after some time".** `_receive` merges rather than
+  replaces, so the peer's open view kept showing the items for the rest of that
+  session and the wipe was invisible; the empty doc landed in its local store at
+  a higher seq, so the items were gone on its next start.
+
+two separate gaps let the write happen: a joined list became editable the moment
+a read was "complete", which the empty read made true with nothing loaded, and
+an owner needed even less - `canEdit` was unconditionally true for `isOwner`, so
+an open that merely failed to read was enough.
+
+- [x] `readDocs` reads the union of the local and network subkey views, so a
+      record the network has forgotten still reads back from this node, and
+      reports `complete` only when the network answered AND knew about
+      everything this node does. an answer of nothing is never complete.
+- [x] `OpenList` tracks `_mineResolved` - we hold the doc already published in
+      our slot, or a whole read says the slot is empty - and refuses to write
+      before that. `canEdit` requires it, owner included. a read that returned
+      no docs at all is never whole: publishing always writes slot 0, so a
+      published record always holds at least one doc.
+- [x] this device's own doc is persisted per list (`LocalList.localDoc`, no
+      longer nulled at publish) and seeded into `_docs` at open, so the record
+      store is not the only copy of it and an unreachable network cannot make
+      the next edit a wipe. it is written before the network write, so an edit
+      that never goes out still survives on the device.
+- [x] foreground sync re-writes this device's own doc every
+      `kRepublishInterval` (6h) so the record is not evicted while a list sits
+      idle. skipped while the list is open, so it never races that list's own
+      writes into a sequence collision (phase 23).
+- [x] covered by "an edit must not publish a doc that erases this member's own
+      items", "a read that found nothing must not report the list as synced",
+      "an owner whose doc failed to load must not overwrite it", "this device's
+      own doc survives a network that forgot the record", and "foreground sync
+      republishes a record nothing has written to". all three of the first ones
+      failed before the fix, the first and third by publishing `['bread']` over
+      a list that had milk and eggs in it.
+- [x] `edits_survive_the_owner_returning_cold` guards the reachable half in the
+      compliance matrix: a member edits while the owner is away, the owner
+      cold-starts and edits, and nothing may vanish on either device.
+- [ ] not covered end to end: a record aging out of the dht cannot be provoked
+      from the harness (it needs the storage nodes to evict, which takes days
+      and other people's traffic), and the republish interval is 6h with no
+      test-only override. the e2e column tests the cold-restart half only.
+- [ ] recovery for lists already emptied: nothing here restores data that was
+      wiped before this shipped. a device that still holds the old doc could
+      republish it, but there is no ui for "put my copy back" and no way to tell
+      a wipe from a deliberate clear-out after the fact.
+
 ## known-flaky linux collaboration flows
 
 measured after the phase 22 work, 15 collab flows on the linux column: 12 pass.
@@ -600,7 +677,9 @@ commit before the conflict-resolution change) in a separate worktree:
   is the slowest propagation path we have. worth hardening the flow (or the
   path) rather than leaving it as noise that trains people to ignore red. worth
   re-measuring first: it renames moments after an add, so phase 23 may have
-  fixed it too.
+  fixed it too. re-measured after phase 25: FAIL in the full column, then PASS
+  on three consecutive re-runs of the flow alone - 1 in 4, so phase 23 did not
+  fix it and it is still the same flake rather than a regression.
 
 ## phase 21 - honest sync state on join
 

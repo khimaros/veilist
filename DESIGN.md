@@ -155,10 +155,17 @@ link and shows the listing immediately while the node connects (local-first).
 
 the roster of known lists is stored with veilid's own `openTableDB` (no extra
 storage dependency, R10). per list we persist role (owner or member), this
-device's writer keypair, and - for the creator - the full member keypair pool
-and which slots have been handed out, so the creator can keep inviting across
-restarts. `loadAll` tolerates a single unreadable row (e.g. one whose device
-encryption key was rotated by a reinstall) rather than dropping the whole roster.
+device's writer keypair, this device's own member doc, and - for the creator -
+the full member keypair pool and which slots have been handed out, so the
+creator can keep inviting across restarts. `loadAll` tolerates a single
+unreadable row (e.g. one whose device encryption key was rotated by a reinstall)
+rather than dropping the whole roster.
+
+`LocalList.localDoc` holds this device's own `MemberDoc` for every list, not
+only unshared ones. `OpenList` writes it before each network write and seeds it
+into the fold at open. that is what makes the dht record store not the only copy
+of our own contribution (R16): see "losing a member doc" below for what it
+costs when it is.
 
 ## local until share (R8, R12)
 
@@ -171,8 +178,11 @@ veilid - so creating and editing are instant and leave no network footprint. the
 sync chip reads "saved on this device".
 
 the first `shareList` publishes: it creates the real record, writes the
-accumulated doc to slot 0, swaps the placeholder key for the record key, and sets
-`published: true`. the open detail page listens to the repository and, on that
+accumulated doc to slot 0, keeps that doc in `localDoc`, and swaps the
+placeholder key for the record key, setting `published: true`. because
+publishing always writes slot 0, a published record always holds at least one
+member doc - which is why a read that comes back with nothing is treated as a
+failed read rather than an empty list. the open detail page listens to the repository and, on that
 transition, rebuilds its `OpenList` so it switches from the local network to the
 dht one and begins syncing. joined lists are always published.
 
@@ -254,13 +264,29 @@ joiner opens with zero members and reads nothing. reads (`getDHTValue`) tolerate
 a joiner also starts read-only, but only the first time. a plain open sees only
 locally-populated subkeys, so a *first-ever* join would render empty and invite
 edits the real data then overwrites. `OpenList` tracks two flags:
-`_loadedFromCache` (the open-time local read returned data, i.e. this list
-synced before) and `_liveSynced` (a network read or watch change has landed this
-session). `canEdit` is true for a list you created, or once either flag is set -
-so a re-opened list loads from cache and is editable immediately while it
-revalidates, and only a first-ever join with nothing cached waits. until the
-live read confirms, the sync chip reads "syncing"; `awaitingInitialSync` (the
-detail-body spinner) is shown only for that first-ever, nothing-cached case.
+`_loadedFromCache` (the open-time local read or the stored `localDoc` returned
+data, i.e. this list synced before) and `_liveSynced` (a network read or watch
+change has landed this session). `canEdit` needs one of those AND
+`_mineResolved` - see "losing a member doc" - so a re-opened list loads from
+cache and is editable immediately while it revalidates, and only a first-ever
+join with nothing cached waits. until the live read confirms, the sync chip
+reads "syncing"; `awaitingInitialSync` (the detail-body spinner) covers any list
+that has nothing to show and cannot yet be edited.
+
+### losing a member doc
+
+each write publishes the WHOLE of this device's member doc, so a doc we have not
+loaded is a doc we must not write: the snapshot would carry only the newest
+edit, and since an absent assertion is not a tombstone (the fold drops any item
+with no `present`), everything this device ever contributed would cease to exist
+for every member - permanently, since we are our slot's only writer and
+`refresh` does not merge our own slot back. this is how a real list was emptied
+on two devices at once (ROADMAP phase 25).
+
+so `OpenList` will not write until `_mineResolved`: either it holds the doc
+already published in the slot (from `localDoc`, the open-time read, or a watch
+change) or a read it can trust says the slot is empty. "trust" excludes a read
+that returned no docs at all, however complete the layer below believed it was.
 
 ## staying in sync while open and in the roster
 
@@ -283,7 +309,11 @@ a read can also come back *incomplete*: veilid's network inspect returns
 TryAgain until a freshly opened record is reachable (the layer then falls back to
 the local view of which subkeys hold data), and each subkey read can fail on its
 own. `readDocs` therefore returns `(docs, complete)`, and `OpenList` treats only
-a complete read as a live sync. without that distinction a joiner declared
+a complete read as a live sync. `complete` means the network answered AND knew
+about every subkey this node does; a network missing one we hold is serving a
+fragment, and an answer of nothing at all is not a sync however cleanly it came
+back. the read itself covers the union of both views, so a record the network
+has forgotten still reads back from this node instead of coming back empty. without that distinction a joiner declared
 itself synced on the first fragment and then visibly rewrote the list as the
 remaining members' docs arrived - which reads as the app replaying history, when
 it is really the fold gaining one member at a time. a first-ever join also keeps
@@ -314,6 +344,19 @@ foreground sync and an open detail page watch the same record without one
 tearing down the other. the watch set is capped (`kMaxForegroundWatches`) to
 stay under veilid's per-node open-record limit; lists beyond the cap still sync
 when opened.
+
+### keeping a record on the network
+
+a dht record is not stored forever. the nodes holding it keep other people's
+records under an lru capped at `remote_max_records` (128 a node off-web), so a
+record nobody writes to is eventually evicted from every node that had it. each
+member still holds its own copy, but they can no longer reach each other: reads
+find nothing, and no edit either side makes ever arrives.
+
+nothing else refreshes a record, so the foreground sync re-writes this device's
+own doc every `kRepublishInterval` (6h). it is skipped while the list is open,
+because a republish racing that list's own write would put two writes on one
+subkey at the same sequence and the dht would silently keep only the first.
 
 ## testing
 

@@ -13,6 +13,7 @@ class LocalList {
     required this.addedAt,
     this.published = true,
     this.localDoc,
+    this.republishedAt = 0,
     List<String>? memberPool,
     Set<int>? assignedSlots,
   }) : memberPool = memberPool ?? const [],
@@ -44,10 +45,17 @@ class LocalList {
   /// published to the network until the first share (R8).
   bool published;
 
-  /// the creator's own MemberDoc json while [published] is false; the list's
-  /// only storage until it is shared. null once published (the doc lives in the
-  /// dht record).
+  /// this device's own MemberDoc json, as of its last edit. for an unpublished
+  /// list it is the list's only storage; for a published one it is a copy kept
+  /// alongside the dht record, so a record the network has forgotten - or a
+  /// read that comes back empty - can never make this device publish an empty
+  /// doc over its own contribution. null until this device has edited.
   String? localDoc;
+
+  /// when this device last wrote its own doc to the record (micros since epoch,
+  /// 0 for never). storage nodes evict records nobody writes to, so a published
+  /// list is re-written periodically to keep it reachable.
+  int republishedAt;
 
   /// creator only: every member slot's keypair, indexed by slot. empty until
   /// the list is published.
@@ -65,6 +73,7 @@ class LocalList {
     'addedAt': addedAt,
     'published': published,
     if (localDoc != null) 'localDoc': localDoc,
+    'republishedAt': republishedAt,
     if (isOwner) 'memberPool': memberPool,
     if (isOwner) 'assignedSlots': assignedSlots.toList(),
   };
@@ -79,6 +88,7 @@ class LocalList {
     // default true so lists saved before this field existed load as published.
     published: j['published'] as bool? ?? true,
     localDoc: j['localDoc'] as String?,
+    republishedAt: j['republishedAt'] as int? ?? 0,
     memberPool: (j['memberPool'] as List?)?.map((e) => e as String).toList(),
     assignedSlots: (j['assignedSlots'] as List?)?.map((e) => e as int).toSet(),
   );

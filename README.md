@@ -31,6 +31,11 @@ next, and [REQUIREMENTS.md](REQUIREMENTS.md) for the product requirements.
   once it has synced, it re-opens instantly and is editable while it refreshes
 - every list stays current while the app is open, even the ones you have not
   opened, so the roster reflects what others have changed
+- your own edits are kept on your device as well as in the shared list, so a
+  list nobody has touched for a while - one the network has stopped holding on
+  to - comes back with your items intact rather than empty
+- a list nobody edits is refreshed on the network in the background while the
+  app is open, so it stays reachable to everyone you shared it with
 - hide or show completed items from the list's app bar
 
 ## platforms

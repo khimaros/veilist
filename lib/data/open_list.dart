@@ -32,6 +32,8 @@ class OpenList extends ChangeNotifier {
     required this.local,
     required ListNetwork network,
     this.onTitleChanged,
+    this.onDocChanged,
+    this.onClosed,
     HybridClock? clock,
   }) : _net = network,
        _clock = clock ?? HybridClock.device;
@@ -45,6 +47,13 @@ class OpenList extends ChangeNotifier {
 
   /// called when the folded title changes, so the roster cache stays current.
   final void Function(String title)? onTitleChanged;
+
+  /// called with this device's own member doc whenever it changes, so the
+  /// roster keeps a copy that does not depend on the dht record store.
+  final void Function(String json)? onDocChanged;
+
+  /// called once the list is disposed, so the roster knows it is no longer open.
+  final VoidCallback? onClosed;
 
   // memberIndex -> that member's latest doc.
   final Map<int, MemberDoc> _docs = {};
@@ -62,6 +71,13 @@ class OpenList extends ChangeNotifier {
   // a live network read (or watch change) has landed this session, so the sync
   // indicator can read "synced" rather than "syncing".
   bool _liveSynced = false;
+  // this device's own slot is accounted for: we hold the doc already published
+  // there, or a whole read says the slot is empty. every write carries a FULL
+  // snapshot of that doc, so writing before this is known publishes a doc
+  // holding only the newest edit - and since an absent assertion is not a
+  // tombstone, everything this device ever contributed ceases to exist for
+  // every member (see DESIGN.md "losing a member doc").
+  bool _mineResolved = false;
   SyncStatus _sync = SyncStatus.offline;
   int _ticks = 0;
   bool _wasReady = false;
@@ -82,22 +98,40 @@ class OpenList extends ChangeNotifier {
   Object? get error => _error;
   bool get isOwner => local.isOwner;
 
-  /// a joined list is editable once it has data to edit - loaded from cache or
-  /// synced live - so a re-opened list is usable at once while it revalidates,
-  /// and only a first-ever join (nothing cached) waits. lists created here are
-  /// always editable.
-  bool get canEdit => local.isOwner || _loadedFromCache || _liveSynced;
+  /// a list is editable once this device holds its own doc (or knows the slot
+  /// is empty) AND there is something to edit - loaded from cache or synced
+  /// live - so a re-opened list is usable at once while it revalidates, and
+  /// only a first-ever join (nothing cached) waits. an owner needs no data of
+  /// anyone else's, but it still may not edit a doc it has not loaded.
+  bool get canEdit =>
+      _mineResolved && (local.isOwner || _loadedFromCache || _liveSynced);
 
-  /// true only while a first-ever shared list (nothing cached) is still
-  /// fetching its initial data.
-  bool get awaitingInitialSync =>
-      !local.isOwner && !_loadedFromCache && !_liveSynced;
+  /// true while a shared list with nothing to show is still fetching.
+  bool get awaitingInitialSync => !canEdit && !_loadedFromCache;
 
   MemberDoc get _mine => _docs.putIfAbsent(local.memberIndex, MemberDoc.new);
+
+  // a published record always holds at least the creator's doc, so a read that
+  // came back with nothing never reached it - however complete the layer below
+  // believed it was. trusting such a read is what let a device conclude it was
+  // synced with a list it had not read a byte of.
+  bool _isWhole(DocsRead read) => read.complete && read.docs.isNotEmpty;
 
   /// open the record, load current state, and start watching.
   Future<void> open() async {
     try {
+      // an unshared list has no dht record and no other member: the on-device
+      // doc IS the list, so there is no published slot to write less than.
+      if (!local.published) _mineResolved = true;
+      // this device's own doc as of its last edit, kept on-device so the dht
+      // record store is not the only copy of it. it is what makes the slot
+      // resolved before a single read lands, so an unreachable network can
+      // never turn the next edit into a wipe.
+      final cached = local.localDoc;
+      if (cached != null) {
+        _receive(local.memberIndex, cached);
+        _loadedFromCache = true;
+      }
       _memberCount = await _net.openRecord(
         local.recordKey,
         writer: local.writer,
@@ -107,6 +141,8 @@ class OpenList extends ChangeNotifier {
       // cached data (a list synced before) means we can show it and allow edits
       // immediately; a first-ever join with nothing cached waits for the sync.
       if (read.docs.isNotEmpty) _loadedFromCache = true;
+      // a whole read that did not carry our slot proves the slot is empty.
+      if (_isWhole(read)) _mineResolved = true;
       _changeSub = _net.changes
           .where((c) => c.recordKey == local.recordKey)
           .listen(_onRemoteChange);
@@ -205,8 +241,10 @@ class OpenList extends ChangeNotifier {
     read.docs.forEach((i, json) {
       // we are the sole authority for our own slot; a network read must not
       // clobber our in-memory contribution, which may hold an edit that has not
-      // been flushed yet (e.g. a rename racing the open-time refresh).
-      if (i == local.memberIndex) return;
+      // been flushed yet (e.g. a rename racing the open-time refresh). the one
+      // exception is a slot we have not loaded at all: then this read IS how we
+      // learn what is already published there, and merging cannot lose an edit.
+      if (i == local.memberIndex && _mineResolved) return;
       _receive(i, json);
     });
     _refold();
@@ -215,8 +253,9 @@ class OpenList extends ChangeNotifier {
     // next few reads and visibly rewrite the list - so claiming "synced" here
     // would be a lie, and would drop a first-ever join's spinner onto a
     // half-built list.
-    if (read.complete) {
+    if (_isWhole(read)) {
       _loadedFromCache = true;
+      _mineResolved = true;
       if (_net.isReady) _liveSynced = true;
     }
     notifyListeners();
@@ -303,7 +342,15 @@ class OpenList extends ChangeNotifier {
   // snapshot, so an edit made while a write is in flight does not need a write
   // of its own: re-sending the latest doc once that write lands carries it.
   Future<void> _flush() {
+    // never publish a snapshot of a slot we have not accounted for. every
+    // caller checks canEdit first, so reaching this means something slipped
+    // through - and the cost of the write going out is the whole list.
+    if (!_mineResolved) return Future<void>.value();
     _refold();
+    // persist our own doc before it goes anywhere: an edit that never reaches
+    // the network still survives on this device, and the copy is what keeps the
+    // next open from having to trust the network about our own slot.
+    onDocChanged?.call(jsonEncode(_mine.toJson()));
     _sync = SyncStatus.syncing;
     notifyListeners();
     if (_writes != null) {
@@ -354,6 +401,7 @@ class OpenList extends ChangeNotifier {
     }
     final held = _docs[member];
     _docs[member] = held == null ? incoming : held.mergedWith(incoming);
+    if (member == local.memberIndex) _mineResolved = true;
   }
 
   // ids are unique per device: member index + creation micros + a local seq
@@ -383,6 +431,7 @@ class OpenList extends ChangeNotifier {
               : pending.then((_) => _net.closeRecord(local.recordKey)))
           .catchError((_) {}),
     );
+    onClosed?.call();
     super.dispose();
   }
 }

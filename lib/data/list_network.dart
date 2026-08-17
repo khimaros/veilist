@@ -153,13 +153,25 @@ class VeilidListNetwork implements ListNetwork {
     // the node is still connecting; a local inspect is non-blocking and tells us
     // which subkeys to bother reading.
     final populated = await _populatedSubkeys(key, network: forceRefresh);
-    // a local read only ever shows what this node happens to hold, so it is
-    // never the whole picture; a network read is, unless a subkey slips.
-    var complete = populated.fromNetwork;
+    // read every subkey EITHER view knows to hold a value. storage nodes keep
+    // other people's records under an lru, so a list nobody has written to for
+    // days is evicted from every node holding it; reading only what the network
+    // still knows about would make that list come back empty even though this
+    // node holds every doc.
+    final held = {...populated.local, ...populated.network};
+    // the whole picture only when the network answered AND knew about
+    // everything this node does. a network missing a subkey we hold is serving
+    // a fragment however cleanly it answered, and an answer of nothing at all
+    // is not a sync - calling it one is what let a member publish an empty doc
+    // over its own contribution.
+    var complete =
+        populated.fromNetwork &&
+        held.isNotEmpty &&
+        populated.network.containsAll(populated.local);
     final docs = <int, String>{};
     for (var i = 0; i < memberCount; i++) {
       final sk = memberDataSubkey(i);
-      if (!populated.subkeys.contains(sk)) continue;
+      if (!held.contains(sk)) continue;
       try {
         final v = await _rc.getDHTValue(key, sk, forceRefresh: forceRefresh);
         if (v != null) {
@@ -175,15 +187,13 @@ class VeilidListNetwork implements ListNetwork {
     return (docs: docs, complete: complete);
   }
 
-  // subkeys that currently hold a value, from a non-blocking local inspect (or
-  // a network inspect when [network] and reachable). `fromNetwork` says which
-  // view answered: the network inspect returns TryAgain until a freshly opened
-  // record is reachable, and the local fallback only knows what this node has
-  // already fetched.
-  Future<({Set<int> subkeys, bool fromNetwork})> _populatedSubkeys(
-    RecordKey key, {
-    required bool network,
-  }) async {
+  // subkeys that currently hold a value, as this node sees them and as the
+  // network does. `fromNetwork` says whether the network view answered at all:
+  // the network inspect returns TryAgain until a freshly opened record is
+  // reachable, and the local view only knows what this node has already
+  // fetched, so neither alone is the whole story.
+  Future<({Set<int> local, Set<int> network, bool fromNetwork})>
+  _populatedSubkeys(RecordKey key, {required bool network}) async {
     DHTRecordReport report;
     var useNetwork = network;
     try {
@@ -195,7 +205,16 @@ class VeilidListNetwork implements ListNetwork {
       useNetwork = false;
       report = await _rc.inspectDHTRecord(key);
     }
-    final seqs = useNetwork ? report.networkSeqs : report.localSeqs;
+    return (
+      local: _withValues(report, report.localSeqs),
+      network: useNetwork ? _withValues(report, report.networkSeqs) : <int>{},
+      fromNetwork: useNetwork,
+    );
+  }
+
+  // the subkeys whose sequence entry says a value is held. seqs run in
+  // ascending subkey order across the report's ranges.
+  Set<int> _withValues(DHTRecordReport report, List<int?> seqs) {
     final result = <int>{};
     var j = 0;
     for (final range in report.subkeys) {
@@ -203,7 +222,7 @@ class VeilidListNetwork implements ListNetwork {
         if (j < seqs.length && seqs[j] != null) result.add(sk);
       }
     }
-    return (subkeys: result, fromNetwork: useNetwork);
+    return result;
   }
 
   @override
