@@ -476,6 +476,25 @@ def rename_reaches_listing(f):  # rename reaches a peer's listing via fg sync
     b.wait_for_list(renamed)
 
 
+def listing_flags_a_peer_edit(f):  # R17
+    # b is NOT viewing the list: the listing shows only a title, so a peer's
+    # edits are invisible there unless the list is marked as changed. the mark
+    # must then clear once b has actually looked at it.
+    b = f.peer()
+    name = unique("flag")
+    _share_and_join(f, b, name, "seed")
+    b.go_listing()
+    assert not b.list_updated(name), "a list b just read came back marked"
+    f.add_item("added-while-away")
+    # the roster's foreground sync is the slowest propagation path we have, so
+    # this takes the full converge budget rather than a tighter one.
+    b.wait_for_list_updated(name)
+    b.open_list(name)
+    b.wait_for_item("added-while-away", timeout_s=90)
+    b.go_listing()
+    assert not b.list_updated(name), "viewing the list left it marked"
+
+
 def edits_survive_the_owner_returning_cold(f):  # R16 - the reported wipe
     # a member edits a list while the owner is away for a long time; both come
     # back and the owner edits. no write may publish less than that device
@@ -552,6 +571,7 @@ COLLAB = [
     ("offline_edits_flush_when_reopened", offline_edits_flush_when_reopened),
     ("member_can_rename", member_can_rename),
     ("rename_reaches_listing", rename_reaches_listing),
+    ("listing_flags_a_peer_edit", listing_flags_a_peer_edit),
     ("edits_survive_the_owner_returning_cold", edits_survive_the_owner_returning_cold),
     ("reorder_while_closed_syncs_on_reopen", reorder_while_closed_syncs_on_reopen),
 ]

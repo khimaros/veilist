@@ -9,3 +9,7 @@
   edit published an empty list over everyone's items
 * your own items are now kept on your device as well as in the shared list, and
   a list nobody edits is refreshed in the background so it stays reachable
+* a list someone else has changed since you last looked at it is marked on the
+  listing, so you can see what moved without opening each one
+* every list catches up at once when you open the app, instead of one after
+  another, so a big roster no longer takes a while to be current

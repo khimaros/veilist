@@ -142,4 +142,60 @@ void main() {
       expect(stamped.toJson()[1], 1);
     });
   });
+
+  group('foldDigest', () {
+    test('the same folded view always digests the same', () {
+      final c = Contribution()
+        ..addItem('a', 'milk', ts(1))
+        ..addItem('b', 'eggs', ts(2));
+      expect(foldDigest(foldList([c])), foldDigest(foldList([c])));
+    });
+
+    test('a change to an item or its state moves the digest', () {
+      final c = Contribution()..addItem('a', 'milk', ts(1));
+      final base = foldDigest(foldList([c]));
+
+      final renamed = Contribution()
+        ..addItem('a', 'milk', ts(1))
+        ..setText('a', 'oat milk', ts(2));
+      expect(foldDigest(foldList([renamed])), isNot(base));
+
+      final ticked = Contribution()
+        ..addItem('a', 'milk', ts(1))
+        ..setState('a', ItemState.complete, ts(2));
+      expect(foldDigest(foldList([ticked])), isNot(base));
+    });
+
+    test('adding and removing an item leaves the digest where it started', () {
+      // an undone change reads as no change, which is the point of digesting
+      // the view rather than comparing timestamps.
+      final c = Contribution()..addItem('a', 'milk', ts(1));
+      final base = foldDigest(foldList([c]));
+      c.addItem('b', 'eggs', ts(2));
+      expect(foldDigest(foldList([c])), isNot(base));
+      c.removeItem('b', ts(3));
+      expect(foldDigest(foldList([c])), base);
+    });
+
+    test('a reorder moves the digest', () {
+      final c = Contribution()
+        ..addItem('a', 'milk', ts(1))
+        ..addItem('b', 'eggs', ts(2));
+      final base = foldDigest(foldList([c]));
+      c.setOrder('b', -1, ts(3));
+      expect(foldDigest(foldList([c])), isNot(base));
+    });
+
+    test('field boundaries cannot be forged by item text', () {
+      // one item reading "ab" must not digest like one reading "a" whose id
+      // absorbed the "b", or a rename shuffling characters across the two
+      // would go unnoticed.
+      final joined = Contribution()..addItem('i', 'ab', ts(1));
+      final split = Contribution()..addItem('ib', 'a', ts(1));
+      expect(
+        foldDigest(foldList([joined])),
+        isNot(foldDigest(foldList([split]))),
+      );
+    });
+  });
 }

@@ -5,6 +5,10 @@
 
 import 'item_state.dart';
 
+/// fnv-1a offset basis and prime, 32 bit.
+const int _kDigestBasis = 0x811c9dc5;
+const int _kDigestPrime = 0x01000193;
+
 /// a hybrid logical timestamp: wall-clock microseconds, a counter, and the
 /// member index as a final tiebreak, compared lexicographically in that order.
 ///
@@ -254,4 +258,35 @@ List<ListItem> foldList(Iterable<Contribution> contributions) {
         x.order != y.order ? x.order.compareTo(y.order) : x.id.compareTo(y.id),
   );
   return items;
+}
+
+/// a stable digest of the folded items, for telling whether a list changed
+/// since the user last had it on screen (R17).
+///
+/// the title is deliberately left out: the listing already renders it, so a
+/// rename is visible there without a mark - and including it would make your
+/// own rename from the listing come back as somebody else's change.
+///
+/// rolled by hand because it is PERSISTED: dart's string hashing is not
+/// promised to be stable across vm versions, and a digest that shifts under the
+/// app would mark every list changed after an upgrade. comparing digests rather
+/// than timestamps also means a change and its undo read as no change at all,
+/// and needs nothing to be true about the devices' clocks.
+String foldDigest(Iterable<ListItem> items) {
+  var h = _kDigestBasis;
+  // a field boundary that item text cannot forge, so "ab" + "c" and "a" + "bc"
+  // do not digest alike.
+  void mix(String s) {
+    for (var i = 0; i < s.length; i++) {
+      h = ((h ^ s.codeUnitAt(i)) * _kDigestPrime) & 0xffffffff;
+    }
+    h = ((h ^ 0) * _kDigestPrime) & 0xffffffff;
+  }
+
+  for (final item in items) {
+    mix(item.id);
+    mix(item.text);
+    mix(item.state.code);
+  }
+  return h.toRadixString(16);
 }

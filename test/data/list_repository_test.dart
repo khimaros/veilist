@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:veilist/data/list_network.dart';
 import 'package:veilist/data/list_repository.dart';
 import 'package:veilist/data/list_store.dart';
 import 'package:veilist/models/item_state.dart';
@@ -21,6 +24,34 @@ class WriteRecordingNetwork extends FakeListNetwork {
   Future<void> writeDoc(String recordKey, int memberIndex, String json) {
     writes.add((key: recordKey, member: memberIndex));
     return super.writeDoc(recordKey, memberIndex, json);
+  }
+}
+
+// counts opens and reads per record, and holds each open until released, so a
+// test can see how many records the foreground sync has in flight at once and
+// what a change arriving mid-sync does.
+class GatedOpenNetwork extends FakeListNetwork {
+  GatedOpenNetwork(super.dht);
+
+  final Map<String, int> opens = {};
+  final Map<String, int> reads = {};
+  Completer<void>? gate;
+
+  @override
+  Future<int> openRecord(String recordKey, {required String writer}) async {
+    opens.update(recordKey, (n) => n + 1, ifAbsent: () => 1);
+    await gate?.future;
+    return super.openRecord(recordKey, writer: writer);
+  }
+
+  @override
+  Future<DocsRead> readDocs(
+    String recordKey,
+    int memberCount, {
+    bool forceRefresh = false,
+  }) {
+    reads.update(recordKey, (n) => n + 1, ifAbsent: () => 1);
+    return super.readDocs(recordKey, memberCount, forceRefresh: forceRefresh);
   }
 }
 
@@ -305,7 +336,6 @@ void main() {
     },
   );
 
-  // the foreground sync iterates the roster with awaits between entries; a
   test('foreground sync republishes a record nothing has written to', () async {
     // veilid's storage nodes hold other people's records under an lru, so a
     // record nobody writes to is eventually evicted from every node holding it
@@ -330,6 +360,46 @@ void main() {
     await repo.startForegroundSync();
     await settle();
     expect(net.writes, isEmpty);
+    await repo.stopForegroundSync();
+  });
+
+  // the roster's watches are rebuilt on every resume from background, so
+  // opening them one at a time put the last list a full round trip behind every
+  // earlier one. and syncing them at once must still open each record once:
+  // VeilidListNetwork refcounts opens, so a double open leaves a ref behind
+  // that the single close on background never releases.
+  test('foreground sync opens the roster at once, each record once', () async {
+    final dht = FakeDht();
+    final net = GatedOpenNetwork(dht);
+    final repo = ListRepository(store: FakeListStore(), network: net);
+    await repo.load();
+    final a = await repo.shareList(await repo.createList('a'));
+    final b = await repo.shareList(await repo.createList('b'));
+    await repo.shareList(await repo.createList('c'));
+
+    net.opens.clear(); // publishing opened each record once already
+    net.reads.clear();
+    net.gate = Completer<void>();
+    unawaited(repo.startForegroundSync());
+    await settle();
+    // all three are open at once, not one waiting on the last to finish.
+    expect(net.opens.length, 3);
+
+    // a watch update for a record whose sync is still in flight must not start
+    // a second one: nothing has reached _watched yet, so only an in-flight
+    // guard stops it opening the record again.
+    dht.writeDoc(a.recordKey, 4, '{"i":{}}');
+    await settle();
+    net.gate!.complete();
+    await settle();
+    expect(net.opens[a.recordKey], 1);
+
+    // but it must not be dropped either. that read started before the write
+    // landed, and a watch fires once per change, so nothing else is coming: the
+    // record has to be read again once the in-flight sync finishes.
+    expect(net.reads[a.recordKey], 2);
+    expect(net.reads[b.recordKey], 1);
+
     await repo.stopForegroundSync();
   });
 
@@ -393,5 +463,116 @@ void main() {
 
     a.dispose();
     b.dispose();
+  });
+
+  // R17: the listing shows only a title, so without a mark a peer's edits are
+  // invisible until you open the list and compare against memory.
+  test("a peer's edit marks the list as updated in the roster", () async {
+    final dht = FakeDht();
+    final alice = make(dht);
+    final bob = make(dht);
+    await alice.load();
+    await bob.load();
+
+    final list = await alice.createList('trip');
+    final bobList = await bob.joinList(await alice.shareList(list));
+    // joining is deliberate and the joiner opens the list next, so what came
+    // with the invitation is not an unseen change.
+    expect(bobList.hasUpdates, isFalse);
+
+    await bob.startForegroundSync();
+    final a = alice.open(list);
+    await a.open();
+    await a.addItem('passport');
+    await settle();
+    await settle();
+    expect(bob.lists.single.hasUpdates, isTrue);
+
+    // looking at it clears the mark, and a later peer edit sets it again.
+    final b = bob.open(bobList);
+    await b.open();
+    await settle();
+    bob.markSeen(bobList, b.digest);
+    expect(bobList.hasUpdates, isFalse);
+    b.dispose();
+
+    await a.addItem('sunscreen');
+    await settle();
+    await settle();
+    expect(bob.lists.single.hasUpdates, isTrue);
+
+    a.dispose();
+    await bob.stopForegroundSync();
+  });
+
+  // a list you made and have been editing yourself is not news to you.
+  test('your own list is never marked updated by syncing it', () async {
+    final dht = FakeDht();
+    final repo = make(dht);
+    await repo.load();
+    final list = await repo.createList('mine');
+    await repo.shareList(list);
+
+    final open = repo.open(list);
+    await open.open();
+    await open.addItem('a thing');
+    await settle();
+    repo.markSeen(list, open.digest);
+    open.dispose();
+
+    await repo.startForegroundSync();
+    await settle();
+    await settle();
+    expect(list.hasUpdates, isFalse);
+    await repo.stopForegroundSync();
+  });
+
+  // the listing already renders the title, so a rename needs no mark - and
+  // counting it would make your own rename from the listing come straight back
+  // at you as somebody else's change.
+  test('renaming your own list does not mark it updated', () async {
+    final repo = make(FakeDht());
+    await repo.load();
+    final list = await repo.createList('old');
+    await repo.shareList(list);
+    await repo.startForegroundSync();
+    await settle();
+
+    await repo.renameList(list, 'new');
+    await settle();
+    await settle();
+    expect(list.title, 'new');
+    expect(list.hasUpdates, isFalse);
+    await repo.stopForegroundSync();
+  });
+
+  test('an updated mark survives a restart', () async {
+    final dht = FakeDht();
+    final store = FakeListStore();
+    final alice = make(dht);
+    final bob = ListRepository(store: store, network: FakeListNetwork(dht));
+    await alice.load();
+    await bob.load();
+    final list = await alice.createList('trip');
+    final bobList = await bob.joinList(await alice.shareList(list));
+
+    await bob.startForegroundSync();
+    final a = alice.open(list);
+    await a.open();
+    await a.addItem('passport');
+    await settle();
+    await settle();
+    expect(bobList.hasUpdates, isTrue);
+    a.dispose();
+    await bob.stopForegroundSync();
+
+    // the mark is about what this device has looked at, so closing the app
+    // must not count as having looked.
+    final restarted = ListRepository(
+      store: store,
+      network: FakeListNetwork(dht),
+    );
+    await restarted.load();
+    expect(restarted.lists.single.hasUpdates, isTrue);
   });
 }

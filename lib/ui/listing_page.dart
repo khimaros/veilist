@@ -13,6 +13,9 @@ import '../veilid/veilid_service.dart';
 import 'list_detail_page.dart';
 import 'scan_page.dart';
 
+/// diameter of the dot marking a list with unseen changes (R17).
+const double kUnreadDotSize = 10;
+
 class ListingPage extends StatelessWidget {
   const ListingPage({super.key, required this.repository});
 
@@ -136,27 +139,47 @@ class _ListTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final subtitle = list.isOwner ? 'created by you' : 'shared with you';
+    // changed since this device last had it on screen (R17). the listing shows
+    // only a title, so without this a peer's edits are invisible until you open
+    // the list and compare against memory.
+    final updated = list.hasUpdates;
     return ListTile(
       leading: CircleAvatar(
         child: Icon(list.isOwner ? Icons.edit_note : Icons.group),
       ),
-      title: Text(list.title.isEmpty ? '(untitled list)' : list.title),
+      title: Text(
+        list.title.isEmpty ? '(untitled list)' : list.title,
+        style: updated ? const TextStyle(fontWeight: FontWeight.bold) : null,
+      ),
       subtitle: Text(subtitle),
       onTap: () => Navigator.of(context).push(
         MaterialPageRoute<void>(
           builder: (_) => ListDetailPage(repository: repository, local: list),
         ),
       ),
-      trailing: PopupMenuButton<String>(
-        onSelected: (v) {
-          if (v == 'share') _share(context);
-          if (v == 'rename') _rename(context);
-          if (v == 'delete') _delete(context);
-        },
-        itemBuilder: (_) => const [
-          PopupMenuItem(value: 'share', child: Text('share')),
-          PopupMenuItem(value: 'rename', child: Text('rename')),
-          PopupMenuItem(value: 'delete', child: Text('delete')),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (updated)
+            Icon(
+              Icons.circle,
+              key: const Key('unread'),
+              size: kUnreadDotSize,
+              color: Theme.of(context).colorScheme.primary,
+              semanticLabel: 'updated',
+            ),
+          PopupMenuButton<String>(
+            onSelected: (v) {
+              if (v == 'share') _share(context);
+              if (v == 'rename') _rename(context);
+              if (v == 'delete') _delete(context);
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'share', child: Text('share')),
+              PopupMenuItem(value: 'rename', child: Text('rename')),
+              PopupMenuItem(value: 'delete', child: Text('delete')),
+            ],
+          ),
         ],
       ),
     );

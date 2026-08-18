@@ -201,6 +201,12 @@ class WidgetFrontend(Frontend):
     def list_present(self, name):
         return self._present(self.ui.text(name))
 
+    def list_updated(self, name):
+        u = self.ui
+        return self._present(
+            u.descendant(u.ancestor(u.text(name), u.type_("ListTile")), u.key("unread"))
+        )
+
     def has_item(self, text):
         return self._present(self.ui.text(text))
 

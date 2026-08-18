@@ -151,6 +151,11 @@ class Frontend:
     def list_present(self, name):
         return name in self.lists()
 
+    def list_updated(self, name):
+        """whether the listing marks this list as changed since this device
+        last had it on screen (R17)."""
+        raise SkipFlow("list_updated query unsupported")
+
     def has_item(self, text):
         """whether the current list shows an item with this text."""
         raise SkipFlow("has_item query unsupported")
@@ -218,6 +223,11 @@ class Frontend:
     def wait_for_list(self, name, timeout_s=None):
         """wait for a list title to appear on the listing (foreground sync)."""
         self._poll(lambda: self.list_present(name), timeout_s, f"list '{name}'")
+
+    def wait_for_list_updated(self, name, timeout_s=None):
+        self._poll(
+            lambda: self.list_updated(name), timeout_s, f"list '{name}' marked updated"
+        )
 
     def _poll(self, cond, timeout_s, what):
         import time as _t

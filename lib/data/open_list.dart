@@ -94,6 +94,10 @@ class OpenList extends ChangeNotifier {
 
   String get title => _title;
   List<ListItem> get items => _items;
+
+  /// digest of the view as it stands, for the roster's unseen-change mark
+  /// (R17): the detail page reports it so looking at a list clears the mark.
+  String get digest => foldDigest(_items);
   bool get loading => _loading;
   Object? get error => _error;
   bool get isOwner => local.isOwner;
@@ -165,7 +169,7 @@ class OpenList extends ChangeNotifier {
       _error = e;
     } finally {
       _loading = false;
-      notifyListeners();
+      _notify();
     }
   }
 
@@ -193,17 +197,23 @@ class OpenList extends ChangeNotifier {
     _wasReady = ready;
   }
 
+  // a read or a write can outlive the page that started it (see dispose), and
+  // renaming from the listing disposes moments after open() kicked off its
+  // refresh - so the flag has to be re-checked at the notify itself, not once
+  // before the awaits that get us there.
+  void _notify() {
+    if (!_disposed) notifyListeners();
+  }
+
   // synced once local writes have flushed to the network; syncing while any are
   // still pending; offline when not connected and nothing is pending.
   Future<void> _updateSync() async {
-    // a write can outlive the page that made it (see dispose), so it must not
-    // notify a disposed notifier.
     if (_disposed) return;
     // a list that has not been shared lives only on this device.
     if (!local.published) {
       if (_sync != SyncStatus.local) {
         _sync = SyncStatus.local;
-        notifyListeners();
+        _notify();
       }
       return;
     }
@@ -225,7 +235,7 @@ class OpenList extends ChangeNotifier {
     }
     if (next != _sync) {
       _sync = next;
-      notifyListeners();
+      _notify();
     }
   }
 
@@ -258,7 +268,7 @@ class OpenList extends ChangeNotifier {
       _mineResolved = true;
       if (_net.isReady) _liveSynced = true;
     }
-    notifyListeners();
+    _notify();
     unawaited(_updateSync());
   }
 
@@ -269,7 +279,7 @@ class OpenList extends ChangeNotifier {
     _liveSynced = true; // data landed live from the network
     _receive(c.memberIndex, c.json);
     _refold();
-    notifyListeners();
+    _notify();
     unawaited(_updateSync());
   }
 
@@ -352,7 +362,7 @@ class OpenList extends ChangeNotifier {
     // next open from having to trust the network about our own slot.
     onDocChanged?.call(jsonEncode(_mine.toJson()));
     _sync = SyncStatus.syncing;
-    notifyListeners();
+    _notify();
     if (_writes != null) {
       _writeAgain = true;
       return _writes!;

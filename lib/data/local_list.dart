@@ -14,6 +14,8 @@ class LocalList {
     this.published = true,
     this.localDoc,
     this.republishedAt = 0,
+    this.contentDigest,
+    this.seenDigest,
     List<String>? memberPool,
     Set<int>? assignedSlots,
   }) : memberPool = memberPool ?? const [],
@@ -57,6 +59,16 @@ class LocalList {
   /// list is re-written periodically to keep it reachable.
   int republishedAt;
 
+  /// digest of the folded view as this device last read it, and as the user
+  /// last had it on screen (see foldDigest). they disagree exactly when someone
+  /// else changed the list since we looked, which is what the listing marks
+  /// (R17). null on a list whose content nothing has read yet.
+  String? contentDigest;
+  String? seenDigest;
+
+  /// true when the list has changed since this device last showed it.
+  bool get hasUpdates => contentDigest != null && contentDigest != seenDigest;
+
   /// creator only: every member slot's keypair, indexed by slot. empty until
   /// the list is published.
   List<String> memberPool;
@@ -74,6 +86,8 @@ class LocalList {
     'published': published,
     if (localDoc != null) 'localDoc': localDoc,
     'republishedAt': republishedAt,
+    if (contentDigest != null) 'contentDigest': contentDigest,
+    if (seenDigest != null) 'seenDigest': seenDigest,
     if (isOwner) 'memberPool': memberPool,
     if (isOwner) 'assignedSlots': assignedSlots.toList(),
   };
@@ -89,6 +103,8 @@ class LocalList {
     published: j['published'] as bool? ?? true,
     localDoc: j['localDoc'] as String?,
     republishedAt: j['republishedAt'] as int? ?? 0,
+    contentDigest: j['contentDigest'] as String?,
+    seenDigest: j['seenDigest'] as String?,
     memberPool: (j['memberPool'] as List?)?.map((e) => e as String).toList(),
     assignedSlots: (j['assignedSlots'] as List?)?.map((e) => e as int).toSet(),
   );

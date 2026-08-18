@@ -345,6 +345,45 @@ tearing down the other. the watch set is capped (`kMaxForegroundWatches`) to
 stay under veilid's per-node open-record limit; lists beyond the cap still sync
 when opened.
 
+backgrounding closes every watch, so every resume rebuilds all of them. syncing
+the roster one list at a time left the last one a full round trip behind every
+earlier one, so `_syncAll` runs a bounded worker pool
+(`kForegroundSyncConcurrency`) - bounded because opening the whole roster at
+once would swamp the node. that makes two syncs of one record overlap routinely
+rather than rarely (a watch update landing mid-pass), and since the open is
+refcounted a double open leaves behind a ref the single close on background
+never releases: a watch outliving the foreground, and a record that never
+closes. so a record syncs one at a time.
+
+such an update must not simply be dropped, though. the in-flight read may have
+started before that write landed, and a watch fires once per change - so
+dropping it leaves the roster sitting on a view the peer has already moved past,
+with nothing else coming to correct it. it is remembered instead, and the sync
+runs again as soon as the one in flight finishes (the same shape as `_flush`'s
+write loop).
+
+### telling the user what changed (R17)
+
+the listing renders a title and nothing else, so a peer's edits to a list you
+have not opened are invisible - the roster read them, folded them, took the
+title and threw the rest away. each list carries two digests of the folded view
+(`foldDigest`: the title, then every item's id, text and state in order): what
+the roster last read, and what the user last had on screen. they disagree
+exactly when someone changed the list since you looked, which is what the
+listing marks.
+
+digests rather than timestamps because the question is what the list looks like,
+not when it last moved: a change and its undo read as no change, and nothing has
+to be true about the two devices' clocks. it is a hand-rolled fnv-1a because the
+value is persisted and dart does not promise its string hashing is stable across
+vm versions - a digest that shifted under an upgrade would mark the whole roster
+changed.
+
+the detail page reports the digest on every fold, so a list clears while it is
+on screen even as a peer keeps editing it. creating and joining mark seen too:
+the creator has seen everything in a list they just made, and a join is
+deliberate and opens the list next.
+
 ### keeping a record on the network
 
 a dht record is not stored forever. the nodes holding it keep other people's

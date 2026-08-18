@@ -660,6 +660,72 @@ an open that merely failed to read was enough.
       republish it, but there is no ui for "put my copy back" and no way to tell
       a wipe from a deliberate clear-out after the fact.
 
+## phase 26 - the roster catches up fast, and says what changed (R17)
+
+two halves of the same complaint: edit a list on one device, pick up another,
+and the roster should be current and should say which lists moved.
+
+- [x] foreground sync opens its watches concurrently. `_syncAll` awaited one
+      list at a time, so with a roster of n published lists the last one's watch
+      was n sequential network round trips away - and every resume from
+      background rebuilds all of them, because backgrounding closes them. a
+      bounded worker pool (`kForegroundSyncConcurrency`) collapses that to
+      roughly one round trip without flooding the node with opens.
+- [x] one sync per record at a time. `VeilidListNetwork` refcounts opens, so two
+      concurrent `_syncDirty` calls for one record open it twice and the single
+      close on background leaves a ref behind - a watch that outlives the
+      foreground and a record that never closes. serially this needed a watch
+      event to land mid-pass; concurrently it is routine.
+- [x] but such an event is remembered, not dropped. dropping it was the first
+      cut, on the reasoning that the roster would differ from what the user last
+      saw either way - which was wrong: the in-flight read may have started
+      before that write landed, and a watch fires once per change, so nothing
+      else was coming. `listing_flags_a_peer_edit` failed 3 of 4 real linux runs
+      on it (the reads are seconds long, so a peer's write lands mid-sync more
+      often than not). the sync now re-runs when the one in flight finishes,
+      the same shape as `_flush`'s write loop.
+- [x] unseen-change indicator (R17): a list whose content changed since this
+      device last looked at it is marked in the listing with a dot and a bold
+      title. the listing showed only a title, so a peer's edits were invisible
+      until you opened the list and compared from memory.
+- [x] `foldDigest`: a stable fnv-1a digest over the folded items (each item's
+      id, text and state, in order). persisted, so it cannot use the vm's string
+      hashing, which is not promised to be stable across runs. comparing digests
+      rather than timestamps means "changed back to what you saw" reads as seen,
+      and needs no reasoning about clock skew.
+- [x] the title is deliberately NOT in the digest: the listing already renders
+      it, so a rename shows there without a mark - and counting it made your own
+      rename from the listing come straight back at you as somebody else's
+      change (`renaming your own list does not mark it updated` fails with the
+      title mixed in).
+- [x] only a `complete` read notes content. a partial or empty read folds to
+      less than is there, and taking that as the content would mark a list
+      changed on the strength of a read that reached nothing (the R16 lesson).
+- [x] `LocalList.contentDigest` (what the repository last read) vs `seenDigest`
+      (what the user last had on screen); `hasUpdates` is the two disagreeing.
+      the detail page marks both on every fold, so looking at a list clears it
+      even as a peer keeps editing - but not while it is still fetching, when
+      there is nothing on screen to have seen.
+- [x] BUG found on the way (proven by `renaming your own list does not mark it
+      updated`, which threw "A OpenList was used after being disposed"):
+      `_updateSync` checked `_disposed` once BEFORE its awaits and notified
+      after them, and `refresh` never checked at all. renaming from the listing
+      disposes moments after `open()` kicks off its refresh, so this fired on an
+      ordinary path in every debug build. every notify goes through `_notify`
+      now, which re-checks at the notify itself.
+- [x] covered by dart tests for the digest, the unread transitions, the restart,
+      the rename, and `foreground sync opens the roster at once, each record
+      once` - which fails both ways: serial sync makes it see 1 record in flight
+      instead of 3, and dropping the in-flight guard makes it open one record
+      twice.
+- [x] `listing_flags_a_peer_edit` in the compliance matrix: b joins, goes back
+      to the listing, f edits, and the mark must appear and then clear once b
+      looks. the widget frontends (linux, android) query it by finding the dot
+      inside the list's tile; web has no route stack to leave, so its hook keeps
+      every touched list open and it reports skip. measured on linux: 1 of 4
+      runs passed while a mid-sync change was dropped, 3 of 3 once it is
+      remembered. the mark landed ~12s after the peer's edit.
+
 ## known-flaky linux collaboration flows
 
 measured after the phase 22 work, 15 collab flows on the linux column: 12 pass.
@@ -679,7 +745,12 @@ commit before the conflict-resolution change) in a separate worktree:
   re-measuring first: it renames moments after an add, so phase 23 may have
   fixed it too. re-measured after phase 25: FAIL in the full column, then PASS
   on three consecutive re-runs of the flow alone - 1 in 4, so phase 23 did not
-  fix it and it is still the same flake rather than a regression.
+  fix it and it is still the same flake rather than a regression. re-measured
+  again after phase 26: FAIL in the full column, then PASS/PASS/PASS/FAIL on
+  four re-runs - still 1 in 4. phase 26 fixed a dropped watch event on this very
+  path (it was making the new `listing_flags_a_peer_edit` fail 3 runs in 4), so
+  that was a plausible cause and is now ruled out: whatever is left is something
+  else.
 
 ## phase 21 - honest sync state on join
 

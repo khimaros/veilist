@@ -27,6 +27,12 @@ const int kMaxForegroundWatches = 32;
 /// still holding its own copy. nothing else refreshes it.
 const Duration kRepublishInterval = Duration(hours: 6);
 
+/// how many roster lists foreground sync opens and reads at once. a resume from
+/// background rebuilds every watch, and one at a time put the last list in the
+/// roster a full round trip behind every earlier one; opening the whole roster
+/// at once would instead swamp the node.
+const int kForegroundSyncConcurrency = 6;
+
 class ListRepository extends ChangeNotifier {
   ListRepository({required ListStore store, required ListNetwork network})
     : _store = store,
@@ -50,6 +56,14 @@ class ListRepository extends ChangeNotifier {
   // must not race a list's own writes - two writes to one subkey go out at the
   // same sequence and the dht silently keeps only the first (see OpenList).
   final Map<String, int> _openCounts = {};
+  // records with a sync in flight. VeilidListNetwork refcounts opens, so two
+  // concurrent syncs of one record open it twice and the single close on
+  // background leaves a ref behind - a watch outliving the foreground and a
+  // record that never closes. a watch event landing mid-pass was enough for
+  // that serially; syncing the roster concurrently makes it routine.
+  final Set<String> _syncing = {};
+  // records whose sync must run again once the one in flight finishes.
+  final Set<String> _resync = {};
   StreamSubscription<DocChange>? _dirtySub;
   VoidCallback? _onReadinessChanged;
 
@@ -80,6 +94,9 @@ class ListRepository extends ChangeNotifier {
       localDoc: jsonEncode(
         MemberDoc(title: Lww(title, LogicalTs(now, 0))).toJson(),
       ),
+      // the creator has by definition seen everything in a list they just made,
+      // so it must not appear as changed the first time the roster reads it.
+      seenDigest: foldDigest(const []),
     );
     await _store.save(local);
     _lists.add(local);
@@ -142,7 +159,11 @@ class ListRepository extends ChangeNotifier {
       final read = await _network.readDocs(local.recordKey, memberCount);
       // a partial read is fine here: this only warms the roster's cached title,
       // which the open list refreshes anyway.
-      local.title = foldDocs(read.docs.values.map(_decodeDoc)).title;
+      final folded = foldDocs(read.docs.values.map(_decodeDoc));
+      local.title = folded.title;
+      // joining is a deliberate act and the joiner opens the list next, so
+      // what came back with the invitation does not count as an unseen change.
+      local.seenDigest = local.contentDigest = foldDigest(folded.items);
       await _network.closeRecord(local.recordKey);
     } catch (_) {
       // offline join; the title fills in the first time the list is opened.
@@ -256,6 +277,28 @@ class ListRepository extends ChangeNotifier {
     }
   }
 
+  // what the roster last read for this list. it differing from what the user
+  // last had on screen is the whole of "this list has updates" (R17).
+  void _noteContent(LocalList list, String digest) {
+    if (list.contentDigest == digest) return;
+    list.contentDigest = digest;
+    _store.save(list);
+    notifyListeners();
+  }
+
+  /// note that the user is looking at [list] as [digest] describes it, so it
+  /// stops being flagged as changed. the content is marked read as well as
+  /// seen: what is on screen IS what this device knows, and leaving the read
+  /// side stale would keep the list flagged until the next sync pass.
+  void markSeen(LocalList list, String digest) {
+    if (list.seenDigest == digest && list.contentDigest == digest) return;
+    list
+      ..seenDigest = digest
+      ..contentDigest = digest;
+    _store.save(list);
+    notifyListeners();
+  }
+
   void _updateCachedTitle(LocalList list, String title) {
     if (title.isEmpty || list.title == title) return;
     list.title = title;
@@ -305,16 +348,42 @@ class ListRepository extends ChangeNotifier {
     // snapshot the keys: _syncDirty awaits network i/o, during which the roster
     // can be mutated (a create/join/share re-key, another readiness-triggered
     // sync), which would otherwise throw "concurrent modification".
-    final keys = _lists.take(kMaxForegroundWatches).map((l) => l.recordKey);
-    for (final recordKey in keys.toList()) {
-      await _syncDirty(recordKey);
+    final keys = _lists
+        .take(kMaxForegroundWatches)
+        .map((l) => l.recordKey)
+        .toList();
+    await _eachLimited(keys, kForegroundSyncConcurrency, _syncDirty);
+  }
+
+  // one sync per record at a time, because VeilidListNetwork refcounts opens:
+  // two concurrent syncs of one record open it twice, and the single close on
+  // background then leaves a ref behind - a watch outliving the foreground and
+  // a record that never closes. a watch event landing mid-pass was enough for
+  // that when the roster synced serially; syncing it at once makes it routine.
+  //
+  // such an event is remembered rather than dropped. the in-flight read may
+  // have started before that write landed, and a watch fires once per change:
+  // drop it and nothing else is coming, so the roster sits on a view of the
+  // list the peer has already moved past.
+  Future<void> _syncDirty(String recordKey) async {
+    if (!_foreground || !_network.isReady) return;
+    if (!_syncing.add(recordKey)) {
+      _resync.add(recordKey);
+      return;
+    }
+    try {
+      do {
+        _resync.remove(recordKey);
+        await _syncOnce(recordKey);
+      } while (_resync.contains(recordKey));
+    } finally {
+      _syncing.remove(recordKey);
     }
   }
 
   // open (and keep open, so the watch stays live) then re-read one list from the
-  // network, refreshing its cached title.
-  Future<void> _syncDirty(String recordKey) async {
-    if (!_foreground || !_network.isReady) return;
+  // network, refreshing its cached title and what the roster knows it holds.
+  Future<void> _syncOnce(String recordKey) async {
     final list = _byKey(recordKey);
     // an unpublished list has no dht record to watch or read.
     if (list == null || !list.published) return;
@@ -328,10 +397,12 @@ class ListRepository extends ChangeNotifier {
         kMaxMembers,
         forceRefresh: true,
       );
-      _updateCachedTitle(
-        list,
-        foldDocs(read.docs.values.map(_decodeDoc)).title,
-      );
+      final folded = foldDocs(read.docs.values.map(_decodeDoc));
+      _updateCachedTitle(list, folded.title);
+      // only a whole read describes the list. a partial or empty one folds to
+      // less than is there, and noting that as the content would mark the list
+      // changed on the strength of a read that reached nothing (see R16).
+      if (read.complete) _noteContent(list, foldDigest(folded.items));
       await _republishIfStale(list);
     } catch (_) {
       // unreachable for now; a later change or reconnect retries.
@@ -372,4 +443,26 @@ class ListRepository extends ChangeNotifier {
   void _sort() => _lists.sort((a, b) => b.addedAt.compareTo(a.addedAt));
 
   int _nowMicros() => DateTime.now().microsecondsSinceEpoch;
+}
+
+// run [work] over [items], at most [limit] at a time. syncing a record is
+// almost entirely waiting on the network, so one at a time left the last list
+// in the roster a round trip behind every earlier one.
+Future<void> _eachLimited<T>(
+  List<T> items,
+  int limit,
+  Future<void> Function(T) work,
+) async {
+  // dart runs to the next await without interruption, so this cursor is safe to
+  // share between the workers without a lock.
+  var next = 0;
+  Future<void> worker() async {
+    while (next < items.length) {
+      await work(items[next++]);
+    }
+  }
+
+  await Future.wait([
+    for (var i = 0; i < limit && i < items.length; i++) worker(),
+  ]);
 }

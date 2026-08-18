@@ -30,7 +30,11 @@ next, and [REQUIREMENTS.md](REQUIREMENTS.md) for the product requirements.
   data arrives, so you never edit an empty copy that the real list overwrites;
   once it has synced, it re-opens instantly and is editable while it refreshes
 - every list stays current while the app is open, even the ones you have not
-  opened, so the roster reflects what others have changed
+  opened, so the roster reflects what others have changed. they all catch up at
+  once rather than one after another, so picking the app up on a second device
+  does not wait through the whole roster
+- a list someone else has changed since you last looked at it is marked on the
+  listing, so you can see what moved without opening every list
 - your own edits are kept on your device as well as in the shared list, so a
   list nobody has touched for a while - one the network has stopped holding on
   to - comes back with your items intact rather than empty

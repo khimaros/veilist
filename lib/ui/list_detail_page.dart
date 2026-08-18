@@ -50,6 +50,7 @@ class _ListDetailPageState extends State<ListDetailPage>
     WidgetsBinding.instance.addObserver(this);
     _open = widget.repository.open(widget.local);
     _wasPublished = widget.local.published;
+    _open.addListener(_markSeen);
     _open.open();
     // sharing a local-only list publishes it, swapping its local network for
     // the dht one, so rebuild the OpenList when that transition happens.
@@ -61,7 +62,10 @@ class _ListDetailPageState extends State<ListDetailPage>
     _wasPublished = widget.local.published;
     final previous = _open;
     _open = widget.repository.open(widget.local);
-    previous.dispose();
+    previous
+      ..removeListener(_markSeen)
+      ..dispose();
+    _open.addListener(_markSeen);
     _open.open();
     if (mounted) setState(() {});
   }
@@ -72,8 +76,19 @@ class _ListDetailPageState extends State<ListDetailPage>
     widget.repository.removeListener(_onRepositoryChanged);
     _addController.dispose();
     _addFocus.dispose();
-    _open.dispose();
+    _open
+      ..removeListener(_markSeen)
+      ..dispose();
     super.dispose();
+  }
+
+  // having a list on screen is what clears its unseen-change mark in the roster
+  // (R17). the folded view is what the user actually sees, so every change to
+  // it counts - ours, and a peer's arriving while we are watching. a list still
+  // fetching shows nothing, so there is nothing yet to have seen.
+  void _markSeen() {
+    if (_open.awaitingInitialSync) return;
+    widget.repository.markSeen(widget.local, _open.digest);
   }
 
   @override

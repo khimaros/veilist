@@ -24,6 +24,9 @@ to it.
 - **R15 participant count.** a shared list surfaces how many members it has, and
   the share affordance reflects that the list is shared (distinct from a private,
   never-shared list).
+- **R17 unseen changes.** the listing marks a list whose content has changed
+  since this device last had it on screen, so a peer's edits are visible without
+  opening every list to look. the mark clears when the list is viewed.
 - **R7 item states.** a list item has a state. clicking the item's checkbox
   toggles it between open and complete; pressing and holding the checkbox opens
   a picker for the other states. the release ships new/active/complete/blocked
