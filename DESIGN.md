@@ -288,6 +288,17 @@ already published in the slot (from `localDoc`, the open-time read, or a watch
 change) or a read it can trust says the slot is empty. "trust" excludes a read
 that returned no docs at all, however complete the layer below believed it was.
 
+that is a bar on the WRITE, not on the edit. gating `canEdit` on it too made
+every list a member had only ever read go read-only offline: they hold no
+`localDoc`, nothing is published at their slot, and offline nothing can account
+for it, so the whole list refused to be touched - against R12, and reported from
+real use (ROADMAP phase 27). an edit now always lands: folded, on screen, and
+saved to `localDoc`. `_flush` sets `_publishPending` instead of writing, and
+`_resolveMine` releases it once a read accounts for the slot. that read merges
+whatever was published there into our doc on the way in, so the write that
+finally goes out is a superset of both - which matters because a non-creator who
+re-shares hands out their own slot, so two devices can genuinely be writing one.
+
 ## staying in sync while open and in the roster
 
 the watch only delivers changes that arrive *live*. a change a peer made while

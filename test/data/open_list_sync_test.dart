@@ -163,6 +163,38 @@ class UnreadableNetwork extends FakeListNetwork {
   }) async => throw StateError('record not reachable');
 }
 
+// a fake network that is offline with a warm local cache, the way a device is
+// when it opens a list it synced before with no connection: the record still
+// opens from the local store and the read serves only the members this node
+// happens to hold, with nothing from the network, so it is never complete.
+// setReady(true) is the node coming back and reads go normal.
+class OfflineCachedNetwork extends FakeListNetwork {
+  OfflineCachedNetwork(super.dht, {this.cached = const {}}) {
+    setReady(false);
+  }
+
+  /// members whose docs this node already holds locally.
+  final Set<int> cached;
+
+  @override
+  Future<DocsRead> readDocs(
+    String recordKey,
+    int memberCount, {
+    bool forceRefresh = false,
+  }) async {
+    if (isReady) {
+      return super.readDocs(recordKey, memberCount, forceRefresh: forceRefresh);
+    }
+    return (
+      docs: {
+        for (final e in dht.readDocs(recordKey).entries)
+          if (cached.contains(e.key)) e.key: e.value,
+      },
+      complete: false,
+    );
+  }
+}
+
 // records the order of writes and closes, so a test can catch a write issued
 // after the record was released - veilid rejects that outright, and the edit is
 // gone with nothing left to retry it.
@@ -206,6 +238,14 @@ OpenList openAs(
 
 void writeMember(FakeDht dht, String key, int index, Contribution c) =>
     dht.writeDoc(key, index, jsonEncode(MemberDoc(contribution: c).toJson()));
+
+/// the item texts a member has actually published to the record.
+List<String> stored(FakeDht dht, CreatedRecord rec, int member) {
+  final json = dht.readDocs(rec.recordKey)[member];
+  if (json == null) return const [];
+  final doc = MemberDoc.fromJson(jsonDecode(json) as Map<String, dynamic>);
+  return foldDocs([doc]).items.map((i) => i.text).toList();
+}
 
 void main() {
   test('edits made in quick succession all reach the dht', () async {
@@ -676,6 +716,130 @@ void main() {
       contains('milk'),
       reason: 'the edit overwrote the owner\'s whole contribution',
     );
+    open.dispose();
+  });
+
+  // R12: a list that has synced before is editable at once, with no network.
+  // a member who has only ever READ a list someone shared with them holds no
+  // doc of their own, and that must not be what stops the first edit: the slot
+  // such a write would go to has never been written, so there is nothing there
+  // to publish less than.
+  test(
+    'a shared list is editable offline before this device has edited it',
+    () async {
+      final dht = FakeDht();
+      final rec = dht.createRecord();
+      writeMember(
+        dht,
+        rec.recordKey,
+        0,
+        Contribution()
+          ..addItem('a', 'milk', const LogicalTs(1, 0))
+          ..addItem('b', 'eggs', const LogicalTs(2, 0)),
+      );
+
+      final open = openAs(
+        dht,
+        rec,
+        member: 1,
+        net: OfflineCachedNetwork(dht, cached: const {0}),
+      );
+      await open.open();
+      await settle();
+
+      // the cached list is on screen and the node is plainly offline.
+      expect(open.items.map((i) => i.text), ['milk', 'eggs']);
+      expect(open.syncStatus, SyncStatus.offline);
+      expect(open.canEdit, isTrue);
+
+      // ticking an item off and reordering both have to land locally, now.
+      await open.setItemState(open.items.first.id, ItemState.complete);
+      await open.reorder(0, 1);
+      await settle();
+      expect(open.items.map((i) => i.text), ['eggs', 'milk']);
+      expect(open.items.last.state, ItemState.complete);
+      open.dispose();
+    },
+  );
+
+  // and the edit must not evaporate: it is kept on-device so it survives
+  // leaving the list and goes out when the network comes back (R12).
+  test(
+    'an offline edit on a never-edited shared list is kept on-device',
+    () async {
+      final dht = FakeDht();
+      final rec = dht.createRecord();
+      writeMember(
+        dht,
+        rec.recordKey,
+        0,
+        Contribution()..addItem('a', 'milk', const LogicalTs(1, 0)),
+      );
+
+      String? saved;
+      final open = OpenList(
+        local: LocalList(
+          recordKey: rec.recordKey,
+          isOwner: false,
+          writer: rec.pool[1],
+          memberIndex: 1,
+          title: '',
+          addedAt: 0,
+        ),
+        network: OfflineCachedNetwork(dht, cached: const {0}),
+        onDocChanged: (json) => saved = json,
+      );
+      await open.open();
+      await settle();
+      await open.setItemState(open.items.single.id, ItemState.complete);
+      await settle();
+      expect(saved, isNotNull);
+      open.dispose();
+    },
+  );
+
+  // the other half of letting the edit through: the write that was held back
+  // must go out as a MERGE. the slot may already hold items this device has
+  // never read - a second device sharing the slot (a non-creator who re-shared
+  // theirs, see DESIGN.md limitations), or a doc published before this roster
+  // entry was restored - and a snapshot over that is the R16 wipe.
+  test('an edit held back offline publishes a merge, not a snapshot', () async {
+    final dht = FakeDht();
+    final rec = dht.createRecord();
+    writeMember(
+      dht,
+      rec.recordKey,
+      0,
+      Contribution()..addItem('a', 'milk', const LogicalTs(1, 0)),
+    );
+    writeMember(
+      dht,
+      rec.recordKey,
+      1,
+      Contribution()..addItem('b', 'eggs', const LogicalTs(2, 1)),
+    );
+
+    // this node holds member 0's doc and has never read its own slot.
+    final net = OfflineCachedNetwork(dht, cached: const {0});
+    final open = openAs(dht, rec, member: 1, net: net);
+    await open.open();
+    await settle();
+    expect(open.items.map((i) => i.text), ['milk']);
+    expect(open.canEdit, isTrue);
+
+    await open.addItem('bread');
+    await settle();
+    expect(open.items.map((i) => i.text), containsAll(['milk', 'bread']));
+    // nothing published: the slot is still unaccounted for.
+    expect(stored(dht, rec, 1), ['eggs']);
+
+    // the node comes back. the resync reads the slot, merges what is there into
+    // our doc, and only then releases the write.
+    net.setReady(true);
+    await settle();
+    await settle();
+    await settle();
+    expect(stored(dht, rec, 1), containsAll(['eggs', 'bread']));
     open.dispose();
   });
 }

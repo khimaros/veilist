@@ -35,6 +35,9 @@ next, and [REQUIREMENTS.md](REQUIREMENTS.md) for the product requirements.
   does not wait through the whole roster
 - a list someone else has changed since you last looked at it is marked on the
   listing, so you can see what moved without opening every list
+- a list someone shared with you is editable with no connection, even if you
+  have never added anything to it yourself - the edit is yours straight away and
+  goes out when you are back
 - your own edits are kept on your device as well as in the shared list, so a
   list nobody has touched for a while - one the network has stopped holding on
   to - comes back with your items intact rather than empty

@@ -476,6 +476,36 @@ def rename_reaches_listing(f):  # rename reaches a peer's listing via fg sync
     b.wait_for_list(renamed)
 
 
+def joiner_edits_offline_before_ever_editing(f):  # R12 - reported regression
+    # the member a list was shared with, offline, before contributing anything
+    # of their own. they hold no doc of their own and nothing is published at
+    # their slot, so without the network nothing can account for it - and gating
+    # edits on that made the whole list read-only ("can't seem to reorder or
+    # change the status of items while offline... at least for lists that are
+    # shared with me").
+    b = f.peer()
+    name = unique("joinoff")
+    _share_and_join(f, b, name, "one")
+    f.add_item("two")
+    b.wait_for_item("two")
+    # leave and reopen while offline: an open-time read is local-only, so the
+    # slot stays unaccounted for, rather than resolved by an earlier online read.
+    b.go_listing()
+    b.go_offline()
+    b.open_list(name)
+    b.wait_for_sync_status("offline", timeout_s=30)
+    # both of the reported actions have to land, on b's first ever edit here.
+    b.toggle_item("one")
+    b.wait_for_state("one", "complete", timeout_s=20)
+    b.reorder_below("one", "two")
+    b.wait_for_order(["two", "one"], timeout_s=20)
+    # and reach f once b is back, without taking f's items down with them.
+    b.go_online()
+    b.wait_for_sync_status("synced", timeout_s=120)
+    f.wait_for_state("one", "complete")
+    f.wait_for_item("two")
+
+
 def listing_flags_a_peer_edit(f):  # R17
     # b is NOT viewing the list: the listing shows only a title, so a peer's
     # edits are invisible there unless the list is marked as changed. the mark
@@ -572,6 +602,7 @@ COLLAB = [
     ("member_can_rename", member_can_rename),
     ("rename_reaches_listing", rename_reaches_listing),
     ("listing_flags_a_peer_edit", listing_flags_a_peer_edit),
+    ("joiner_edits_offline_before_ever_editing", joiner_edits_offline_before_ever_editing),
     ("edits_survive_the_owner_returning_cold", edits_survive_the_owner_returning_cold),
     ("reorder_while_closed_syncs_on_reopen", reorder_while_closed_syncs_on_reopen),
 ]

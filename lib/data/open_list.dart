@@ -73,11 +73,15 @@ class OpenList extends ChangeNotifier {
   bool _liveSynced = false;
   // this device's own slot is accounted for: we hold the doc already published
   // there, or a whole read says the slot is empty. every write carries a FULL
-  // snapshot of that doc, so writing before this is known publishes a doc
-  // holding only the newest edit - and since an absent assertion is not a
+  // snapshot of that doc, so PUBLISHING before this is known puts a doc holding
+  // only the newest edit over it - and since an absent assertion is not a
   // tombstone, everything this device ever contributed ceases to exist for
   // every member (see DESIGN.md "losing a member doc").
   bool _mineResolved = false;
+  // an edit was made before that was known. the edit itself lands at once, on
+  // screen and on disk (R12) - only the publish waits, because resolving the
+  // slot merges whatever is already there into our doc first.
+  bool _publishPending = false;
   SyncStatus _sync = SyncStatus.offline;
   int _ticks = 0;
   bool _wasReady = false;
@@ -102,13 +106,17 @@ class OpenList extends ChangeNotifier {
   Object? get error => _error;
   bool get isOwner => local.isOwner;
 
-  /// a list is editable once this device holds its own doc (or knows the slot
-  /// is empty) AND there is something to edit - loaded from cache or synced
-  /// live - so a re-opened list is usable at once while it revalidates, and
-  /// only a first-ever join (nothing cached) waits. an owner needs no data of
-  /// anyone else's, but it still may not edit a doc it has not loaded.
-  bool get canEdit =>
-      _mineResolved && (local.isOwner || _loadedFromCache || _liveSynced);
+  /// a list is editable once there is something to edit - loaded from cache or
+  /// synced live - so a re-opened list is usable at once while it revalidates,
+  /// and only a first-ever join (nothing cached) waits. an owner needs no data
+  /// of anyone else's.
+  ///
+  /// deliberately does NOT wait on the slot being resolved. a member who has
+  /// only ever read a list someone shared with them holds no doc of their own,
+  /// and offline nothing can resolve the slot - so gating here made every such
+  /// list read-only until the network came back, against R12. the write is what
+  /// waits instead (see [_flush]).
+  bool get canEdit => local.isOwner || _loadedFromCache || _liveSynced;
 
   /// true while a shared list with nothing to show is still fetching.
   bool get awaitingInitialSync => !canEdit && !_loadedFromCache;
@@ -126,7 +134,7 @@ class OpenList extends ChangeNotifier {
     try {
       // an unshared list has no dht record and no other member: the on-device
       // doc IS the list, so there is no published slot to write less than.
-      if (!local.published) _mineResolved = true;
+      if (!local.published) _resolveMine();
       // this device's own doc as of its last edit, kept on-device so the dht
       // record store is not the only copy of it. it is what makes the slot
       // resolved before a single read lands, so an unreachable network can
@@ -146,7 +154,7 @@ class OpenList extends ChangeNotifier {
       // immediately; a first-ever join with nothing cached waits for the sync.
       if (read.docs.isNotEmpty) _loadedFromCache = true;
       // a whole read that did not carry our slot proves the slot is empty.
-      if (_isWhole(read)) _mineResolved = true;
+      if (_isWhole(read)) _resolveMine();
       _changeSub = _net.changes
           .where((c) => c.recordKey == local.recordKey)
           .listen(_onRemoteChange);
@@ -265,8 +273,8 @@ class OpenList extends ChangeNotifier {
     // half-built list.
     if (_isWhole(read)) {
       _loadedFromCache = true;
-      _mineResolved = true;
       if (_net.isReady) _liveSynced = true;
+      _resolveMine();
     }
     _notify();
     unawaited(_updateSync());
@@ -352,15 +360,22 @@ class OpenList extends ChangeNotifier {
   // snapshot, so an edit made while a write is in flight does not need a write
   // of its own: re-sending the latest doc once that write lands carries it.
   Future<void> _flush() {
-    // never publish a snapshot of a slot we have not accounted for. every
-    // caller checks canEdit first, so reaching this means something slipped
-    // through - and the cost of the write going out is the whole list.
-    if (!_mineResolved) return Future<void>.value();
     _refold();
     // persist our own doc before it goes anywhere: an edit that never reaches
     // the network still survives on this device, and the copy is what keeps the
     // next open from having to trust the network about our own slot.
     onDocChanged?.call(jsonEncode(_mine.toJson()));
+    // the edit is done - folded, on screen, saved. but a snapshot of a slot we
+    // have not accounted for must not go out over what is already there, so the
+    // publish waits for a read to resolve it, which merges that content into
+    // ours on the way. the chip reads offline meanwhile, which is where this
+    // happens in practice.
+    if (!_mineResolved) {
+      _publishPending = true;
+      _notify();
+      unawaited(_updateSync());
+      return Future<void>.value();
+    }
     _sync = SyncStatus.syncing;
     _notify();
     if (_writes != null) {
@@ -384,6 +399,16 @@ class OpenList extends ChangeNotifier {
       _writes = null;
     }
     unawaited(_updateSync());
+  }
+
+  // the slot is accounted for now: whatever was published there has been merged
+  // into our doc, so an edit held back for exactly that reason can go out.
+  void _resolveMine() {
+    if (_mineResolved) return;
+    _mineResolved = true;
+    if (!_publishPending) return;
+    _publishPending = false;
+    unawaited(_flush());
   }
 
   void _refold() {
@@ -411,7 +436,7 @@ class OpenList extends ChangeNotifier {
     }
     final held = _docs[member];
     _docs[member] = held == null ? incoming : held.mergedWith(incoming);
-    if (member == local.memberIndex) _mineResolved = true;
+    if (member == local.memberIndex) _resolveMine();
   }
 
   // ids are unique per device: member index + creation micros + a local seq

@@ -726,6 +726,49 @@ and the roster should be current and should say which lists moved.
       runs passed while a mid-sync change was dropped, 3 of 3 once it is
       remembered. the mark landed ~12s after the peer's edit.
 
+## phase 27 - a shared list stays editable offline (R12 regression from R16)
+
+reported from real use: "can't seem to reorder or change the status of items in
+a list while the status of that list is offline... at least for lists that are
+shared with me".
+
+phase 25 made `canEdit` require `_mineResolved` - this device knowing what its
+own member slot already holds - because every write publishes a FULL snapshot of
+that slot and writing one built from nothing erases it for everyone. correct
+about the write, wrong about the edit:
+
+- [x] a member who has only ever READ a list someone shared with them holds no
+      `localDoc`, and nothing is published at their slot. offline, none of the
+      four things that resolve a slot can happen (a complete read needs the
+      network), so the whole list went read-only. the owner never saw it - their
+      `localDoc` is written at create - and it self-heals after one online edit,
+      which is why it only showed up on shared lists.
+- [x] the edit no longer waits on the slot; the PUBLISH does. an edit lands at
+      once - folded, on screen, saved to `localDoc` - and `_flush` sets
+      `_publishPending` instead of writing. `_resolveMine` releases it when a
+      read accounts for the slot, and that read has merged whatever was already
+      there into our doc first, so what goes out is a superset either way.
+- [x] the alternative - treating a slot this device has never written as empty
+      and publishing at once - was rejected: a non-creator who re-shares hands
+      out their OWN slot (DESIGN.md limitations), so a second device on that
+      slot would publish over the first's items before ever reading them. the
+      merge test below fails that way round.
+- [x] the sync chip is unchanged. this only happens while the node is down, when
+      it already reads offline, and R13 already covers "saved offline".
+- [x] proven first: `a shared list is editable offline before this device has
+      edited it` (canEdit false) and `an offline edit on a never-edited shared
+      list is kept on-device` (the edit was not even persisted) both failed on
+      the phase 25 code. `an edit held back offline publishes a merge, not a
+      snapshot` covers the other half, and fails - along with phase 25's `an
+      owner whose doc failed to load must not overwrite it` - if the held-back
+      write is allowed to go out unmerged.
+- [x] `joiner_edits_offline_before_ever_editing` in the compliance matrix: b
+      joins, leaves the list, goes offline, REOPENS it offline (an open-time
+      read is local-only, so this is the state the report describes), toggles a
+      state and reorders, and both must reach f once b is back. run against the
+      phase 25 gate it fails on "timed out waiting for state 'complete'" - the
+      reported symptom exactly - and passes with the write deferred instead.
+
 ## known-flaky linux collaboration flows
 
 measured after the phase 22 work, 15 collab flows on the linux column: 12 pass.

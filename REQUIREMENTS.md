@@ -40,7 +40,9 @@ to it.
   device and sync when connected. an edit made offline survives leaving the
   list, backgrounding the app, and reconnecting, and goes out once the app is
   open again with a working network - the app runs no foreground service, so it
-  does not promise to sync while it is in the background.
+  does not promise to sync while it is in the background. this holds for a list
+  shared with you that you have never edited, opened with no connection: nothing
+  about publishing safely may make a list read-only.
 - **R16 no silent data loss.** nothing but a deliberate delete removes items
   from a list. a device never publishes less for its own member slot than it
   published before, so a read that fails, comes back partial, or comes back

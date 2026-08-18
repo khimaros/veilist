@@ -13,3 +13,5 @@
   listing, so you can see what moved without opening each one
 * every list catches up at once when you open the app, instead of one after
   another, so a big roster no longer takes a while to be current
+* fixed a list shared with you being read-only while offline until you had
+  edited it at least once with a connection
