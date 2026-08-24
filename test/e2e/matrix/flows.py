@@ -27,6 +27,11 @@ STATE_S = 20
 RECOVER_S = 180
 
 
+# more items than any driven viewport holds, with room to spare: a lazy list
+# also builds a part-screenful past the fold, and this clears that too.
+SCROLL_ITEMS = 20
+
+
 def unique(prefix):
     return f"{prefix}-{uuid.uuid4().hex[:6]}"
 
@@ -74,6 +79,19 @@ def pick_item_state(f):  # R7
     # a tap still completes an item the picker put in another state.
     f.toggle_item("call plumber")
     f.wait_for_state("call plumber", "complete", timeout_s=STATE_S)
+
+
+def added_item_stays_on_screen(f):  # R11 - an add you can see land
+    # an item is appended to the end, so past a screenful of them the new row is
+    # below the fold: the add field clears and nothing visibly happens. the
+    # widget frontends' add_item waits for the new text, so without the list
+    # following the item down this fails on the add itself.
+    _new_list(f, unique("scroll"))
+    f.add_item("item-00")
+    assert f.item_visible("item-00")  # a frontend with no viewport skips here
+    for i in range(1, SCROLL_ITEMS):
+        f.add_item(f"item-{i:02d}")
+    assert f.item_visible(f"item-{SCROLL_ITEMS - 1:02d}")
 
 
 def edit_item_text(f):  # R11
@@ -569,6 +587,7 @@ SINGLE = [
     ("open_list_no_infinite_spinner", open_list_no_infinite_spinner),
     ("add_and_toggle_item_state", add_and_toggle_item_state),
     ("pick_item_state", pick_item_state),
+    ("added_item_stays_on_screen", added_item_stays_on_screen),
     ("edit_item_text", edit_item_text),
     ("reorder_items", reorder_items),
     ("delete_item", delete_item),

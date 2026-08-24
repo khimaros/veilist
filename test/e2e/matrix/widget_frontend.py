@@ -210,6 +210,11 @@ class WidgetFrontend(Frontend):
     def has_item(self, text):
         return self._present(self.ui.text(text))
 
+    def item_visible(self, text):
+        # a lazy list only builds the rows at or near the viewport, so the
+        # driver finding one at all means it is on (or just off) screen.
+        return self._present(self.ui.text(text))
+
     # glyph rendered by StateGlyphButton -> wire code (see ItemState). "new"
     # renders an empty glyph, so an empty string maps back to it.
     _GLYPH_STATE = {

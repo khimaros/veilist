@@ -44,6 +44,8 @@ next, and [REQUIREMENTS.md](REQUIREMENTS.md) for the product requirements.
 - a list nobody edits is refreshed on the network in the background while the
   app is open, so it stays reachable to everyone you shared it with
 - hide or show completed items from the list's app bar
+- adding an item scrolls the list down to it, so a list longer than the screen
+  does not swallow what you just typed
 
 ## platforms
 

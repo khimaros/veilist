@@ -14,6 +14,9 @@ import '../models/crdt.dart';
 import '../models/item_state.dart';
 import 'listing_page.dart' show showShareDialog;
 
+/// how long the list takes to follow a freshly added item down.
+const Duration kAddScrollDuration = Duration(milliseconds: 250);
+
 class ListDetailPage extends StatefulWidget {
   const ListDetailPage({
     super.key,
@@ -32,6 +35,7 @@ class _ListDetailPageState extends State<ListDetailPage>
     with WidgetsBindingObserver {
   final _addController = TextEditingController();
   final _addFocus = FocusNode();
+  final _scroll = ScrollController();
 
   // a per-session view filter: hide items already marked complete. reordering
   // is disabled while this is on, so visible and full indices cannot diverge.
@@ -76,6 +80,7 @@ class _ListDetailPageState extends State<ListDetailPage>
     widget.repository.removeListener(_onRepositoryChanged);
     _addController.dispose();
     _addFocus.dispose();
+    _scroll.dispose();
     _open
       ..removeListener(_markSeen)
       ..dispose();
@@ -198,6 +203,7 @@ class _ListDetailPageState extends State<ListDetailPage>
     // and swipe-to-delete. reordering is off while completed items are hidden,
     // so the visible indices always match the full list.
     return ReorderableListView.builder(
+      scrollController: _scroll,
       buildDefaultDragHandles: false,
       itemCount: visible.length,
       onReorderItem: open.reorder,
@@ -314,6 +320,21 @@ class _ListDetailPageState extends State<ListDetailPage>
     _addController.clear();
     // keep the field focused so the next item can be typed without re-tapping.
     _addFocus.requestFocus();
+    _scrollToEnd();
+  }
+
+  // an added item goes to the end of the list, which on a list taller than the
+  // screen is out of sight - so follow it down. it takes the frame that lays the
+  // new row out for maxScrollExtent to account for it, hence the wait.
+  void _scrollToEnd() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scroll.hasClients) return;
+      _scroll.animateTo(
+        _scroll.position.maxScrollExtent,
+        duration: kAddScrollDuration,
+        curve: Curves.easeOut,
+      );
+    });
   }
 
   Future<void> _rename(OpenList open) async {

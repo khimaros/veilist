@@ -769,6 +769,26 @@ about the write, wrong about the edit:
       phase 25 gate it fails on "timed out waiting for state 'complete'" - the
       reported symptom exactly - and passes with the write deferred instead.
 
+## phase 28 - the item you just added is on screen
+
+adding an item appends it to the end of the list, so on a list taller than the
+screen the row lands below the fold: the add field clears and nothing visibly
+happens. every add past the first screenful looked like it had been swallowed.
+
+- [x] the detail page owns the list's ScrollController and, after the frame that
+      lays the new row out, animates to the end. waiting for the frame is what
+      makes it land on the new row - `maxScrollExtent` only accounts for it once
+      it has been laid out.
+- [x] proven first: `adding an item scrolls the list down to show it` adds
+      enough items to overflow the viewport and fails without the scroll (the
+      newest row is never built, so no finder reaches it).
+- [x] `added_item_stays_on_screen` in the compliance matrix: the widget
+      frontends' `add_item` already waits for the new text, and a lazy list only
+      builds what is near the viewport, so the flow fails on the add itself -
+      measured on the linux column, where it times out in waitFor without the
+      scroll and passes with it. web drives the model through the hook rather
+      than the ui, so it has no viewport to fall out of and skips.
+
 ## known-flaky linux collaboration flows
 
 measured after the phase 22 work, 15 collab flows on the linux column: 12 pass.

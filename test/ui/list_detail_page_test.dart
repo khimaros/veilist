@@ -100,6 +100,34 @@ void main() {
     expect(find.text('@'), findsOneWidget); // active glyph
   });
 
+  testWidgets('adding an item scrolls the list down to show it', (
+    tester,
+  ) async {
+    final repo = ListRepository(
+      store: FakeListStore(),
+      network: FakeListNetwork(FakeDht()),
+    );
+    await repo.load();
+    final list = await repo.createList('chores');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ListDetailPage(repository: repo, local: list),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // more items than fit the viewport, so the newest row is only built - and
+    // so only findable - if the list followed it down.
+    for (var i = 0; i < 20; i++) {
+      await tester.enterText(find.byKey(const Key('add_field')), 'item-$i');
+      await tester.tap(find.byKey(const Key('add_button')));
+      await tester.pumpAndSettle();
+    }
+    expect(find.text('item-19'), findsOneWidget);
+    expect(find.text('item-0'), findsNothing); // scrolled well past the top
+  });
+
   testWidgets('hide/show completed toggles which items are visible', (
     tester,
   ) async {

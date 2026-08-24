@@ -160,6 +160,12 @@ class Frontend:
         """whether the current list shows an item with this text."""
         raise SkipFlow("has_item query unsupported")
 
+    def item_visible(self, text):
+        """whether the item is on screen, not merely in the list. only a
+        frontend driving real widgets can tell them apart: the hook-driven web
+        frontend reads the folded model, where every item is always present."""
+        raise SkipFlow("item_visible query unsupported")
+
     def item_state(self, text):
         """the state of the item with this text, as its wire code: one of
         new | active | complete | blocked (the shipped set; the model carries
