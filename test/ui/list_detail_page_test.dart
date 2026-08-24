@@ -128,6 +128,51 @@ void main() {
     expect(find.text('item-0'), findsNothing); // scrolled well past the top
   });
 
+  testWidgets('a new item stays in view when the keyboard resizes the list', (
+    tester,
+  ) async {
+    // the keyboard is 200 logical pixels of the 600 the test view has.
+    const keyboard = FakeViewPadding(bottom: 600); // physical: dpr is 3
+    addTearDown(tester.view.reset);
+
+    final repo = ListRepository(
+      store: FakeListStore(),
+      network: FakeListNetwork(FakeDht()),
+    );
+    await repo.load();
+    final list = await repo.createList('chores');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ListDetailPage(repository: repo, local: list),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // fill well past the fold with the keyboard already up.
+    tester.view.viewInsets = keyboard;
+    await tester.pumpAndSettle();
+    for (var i = 0; i < 20; i++) {
+      await tester.enterText(find.byKey(const Key('add_field')), 'item-$i');
+      await tester.tap(find.byKey(const Key('add_button')));
+      await tester.pumpAndSettle();
+    }
+    expect(find.text('item-19'), findsOneWidget);
+
+    // now the moving case: the viewport shrinks AFTER the add has aimed its
+    // scroll, which is what happens when the add button takes focus off the
+    // field and it is handed straight back - the keyboard slides out and in
+    // again, and every frame of that moves the end of the list further down.
+    tester.view.resetViewInsets();
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('add_field')), 'item-20');
+    await tester.tap(find.byKey(const Key('add_button')));
+    await tester.pump();
+    tester.view.viewInsets = keyboard;
+    await tester.pumpAndSettle();
+    expect(find.text('item-20'), findsOneWidget);
+  });
+
   testWidgets('hide/show completed toggles which items are visible', (
     tester,
   ) async {

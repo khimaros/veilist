@@ -17,6 +17,13 @@ import 'listing_page.dart' show showShareDialog;
 /// how long the list takes to follow a freshly added item down.
 const Duration kAddScrollDuration = Duration(milliseconds: 250);
 
+/// how long after an add the list keeps re-aiming at its end. the keyboard
+/// slides out and back in when the add button takes focus off the field, and
+/// the end of the list moves on every frame of that; one second covers a slow
+/// device's animation without holding the view down long enough to fight the
+/// user.
+const Duration kAddFollowWindow = Duration(seconds: 1);
+
 class ListDetailPage extends StatefulWidget {
   const ListDetailPage({
     super.key,
@@ -36,6 +43,9 @@ class _ListDetailPageState extends State<ListDetailPage>
   final _addController = TextEditingController();
   final _addFocus = FocusNode();
   final _scroll = ScrollController();
+
+  // running while a just-added item is being followed down; see _scrollToEnd.
+  Timer? _following;
 
   // a per-session view filter: hide items already marked complete. reordering
   // is disabled while this is on, so visible and full indices cannot diverge.
@@ -80,6 +90,7 @@ class _ListDetailPageState extends State<ListDetailPage>
     widget.repository.removeListener(_onRepositoryChanged);
     _addController.dispose();
     _addFocus.dispose();
+    _following?.cancel();
     _scroll.dispose();
     _open
       ..removeListener(_markSeen)
@@ -324,11 +335,28 @@ class _ListDetailPageState extends State<ListDetailPage>
   }
 
   // an added item goes to the end of the list, which on a list taller than the
-  // screen is out of sight - so follow it down. it takes the frame that lays the
-  // new row out for maxScrollExtent to account for it, hence the wait.
+  // screen is out of sight - so follow it down. aiming once is not enough: the
+  // keyboard is still resizing the viewport after the add (the add button takes
+  // focus off the field and it is handed straight back, so the keyboard slides
+  // out and in), and every resize moves the end further down, leaving a single
+  // scroll short of the new row by the height of the keyboard.
   void _scrollToEnd() {
+    _following?.cancel();
+    _following = Timer(kAddFollowWindow, () => _following = null);
+    _aimAtEnd();
+  }
+
+  @override
+  void didChangeMetrics() {
+    if (_following != null) _aimAtEnd();
+  }
+
+  // the end is only where it will finally be once the frame that lays out the
+  // new row - or the resized viewport - has run, so maxScrollExtent is read
+  // after it rather than before.
+  void _aimAtEnd() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scroll.hasClients) return;
+      if (!mounted || !_scroll.hasClients) return;
       _scroll.animateTo(
         _scroll.position.maxScrollExtent,
         duration: kAddScrollDuration,

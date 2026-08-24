@@ -45,7 +45,8 @@ next, and [REQUIREMENTS.md](REQUIREMENTS.md) for the product requirements.
   app is open, so it stays reachable to everyone you shared it with
 - hide or show completed items from the list's app bar
 - adding an item scrolls the list down to it, so a list longer than the screen
-  does not swallow what you just typed
+  does not swallow what you just typed - it stays in view with the keyboard up,
+  ready for the next one
 
 ## platforms
 

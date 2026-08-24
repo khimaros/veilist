@@ -788,6 +788,19 @@ happens. every add past the first screenful looked like it had been swallowed.
       measured on the linux column, where it times out in waitFor without the
       scroll and passes with it. web drives the model through the hook rather
       than the ui, so it has no viewport to fall out of and skips.
+- [x] aiming once is not enough with a keyboard on screen: tapping the add
+      button takes focus off the field and it is handed straight back, so the
+      keyboard slides out and in AFTER the scroll has been aimed. every frame of
+      that resizes the viewport and moves the end of the list down, leaving the
+      new row a keyboard's height below the fold. the page re-aims on
+      `didChangeMetrics` for `kAddFollowWindow` after an add, so the view
+      follows the end while it is still moving and stops before it can fight
+      the user.
+- [x] proven first: `a new item stays in view when the keyboard resizes the
+      list` fakes the view insets. the steady-state case (keyboard already up)
+      passed all along; shrinking the viewport one frame after the add is what
+      fails. the driver suites cannot cover this - flutter driver's text entry
+      bypasses the IME, so no soft keyboard ever appears in them.
 
 ## known-flaky linux collaboration flows
 
