@@ -1,0 +1,16 @@
+# configured by linux/CMakeLists.txt into the bundle as <application id>.desktop.
+# the shell matches a window to this entry by application id and takes the app's
+# name and icon from it, so @BINARY_NAME@ is the name a person reads.
+# Exec is a bare binary name here and scripts/install_linux.sh rewrites it to the
+# absolute path of the bundle it installs, since a bundle unpacks anywhere.
+[Desktop Entry]
+Type=Application
+Name=@BINARY_NAME@
+Comment=simple, private list sharing over the veilid network
+Exec=@BINARY_NAME@
+Icon=@APPLICATION_ID@
+Terminal=false
+Categories=Office;Utility;ProjectManagement;
+Keywords=list;todo;checklist;share;veilid;
+StartupWMClass=@APPLICATION_ID@
+StartupNotify=true

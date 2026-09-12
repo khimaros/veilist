@@ -126,3 +126,22 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
   install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)
 endif()
+
+# === Desktop integration ===
+# A shell matches a window to a desktop entry by application id and takes the
+# app's name and icon from it, so the bundle carries the entry and the icon theme
+# laid out as they sit under $PREFIX/share, and scripts/install_linux.sh (shipped
+# alongside as install.sh, since the release tarball IS this bundle) copies them
+# there. Wayland has no per-window icon protocol, so that install is the only
+# route to an icon under it.
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/packaging/veilist.desktop.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/${APPLICATION_ID}.desktop" @ONLY)
+
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${APPLICATION_ID}.desktop"
+  DESTINATION "${INSTALL_BUNDLE_DATA_DIR}/applications" COMPONENT Runtime)
+
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/packaging/icons"
+  DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" COMPONENT Runtime)
+
+install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/install_linux.sh"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}" RENAME "install.sh" COMPONENT Runtime)

@@ -25,11 +25,16 @@ make test       # dart unit + widget tests
 make test-e2e   # python end-to-end tests
 make precommit  # format check + analyze + unit tests; run before committing
 make wasm       # build the veilid wasm blob into web/wasm/
+make install-linux  # register the built linux bundle with the desktop
 make clean
 ```
 
 the app icon is rendered from `assets/icon/*.svg` by `scripts/build_icons.sh`
-(needs inkscape); edit the svg and re-run it rather than touching the pngs.
+(needs inkscape); edit the svg and re-run it rather than touching the pngs. that
+includes the linux hicolor theme under `linux/packaging/icons`, which cmake
+installs into the bundle next to the desktop entry it generates from the
+application id - see DESIGN.md for why the entry is what gives the app its name
+and icon on a linux desktop.
 
 ## workflow
 
@@ -79,6 +84,12 @@ three layers, fastest first:
   concurrent-edit races. needs the veilid wasm blob (`make wasm`, which requires
   the rust toolchain and downloads a matching `wasm-bindgen-cli` on first run).
 
+- **linux desktop integration** (`test/e2e/desktop/`, `make test-linux-desktop`):
+  launches the real bundle on a private headless display and reads the window
+  back with xprop the way a shell does - its icon and the class it matches to a
+  desktop entry - then installs into a throwaway prefix. the only layer that
+  looks at the window itself; every other one drives the widgets inside it.
+
 unlike the hermetic dart suite, the collaboration flows in every e2e layer need
 the public dht to converge.
 
@@ -92,7 +103,29 @@ mise android sdk and creates the alice/bob avds:
 make android-e2e-setup     # test/scripts/android_e2e_setup.sh (downloads a lot)
 make test-ui-e2e           # single emulator: test_single_device.py
 make test-ui-e2e-two       # two emulators: adds live collaboration (R1,R2,R4)
+make test-android-guards   # the identity guards, against a real emulator
 ```
+
+THIS MACHINE RUNS SEVERAL PROJECTS AGAINST SHARED ADB SERVERS, so the suites
+reserve `emulator-5554`/`emulator-5556` BY NAME and another project's emulator
+can already be sitting there. `wait-for-device` and `sys.boot_completed` both
+pass against a foreign emulator -- a readiness check cannot tell the device you
+asked for from any device at all -- so without a guard a run installs onto a
+stranger, tests it, reports green, and kills it in the exit trap.
+
+`android_env.sh` therefore asserts identity by AVD NAME, twice, with DELIBERATELY
+OPPOSITE policies on an unanswered console:
+
+- `assert_avd_free` before booting: no answer means FREE, because a squatter that
+  will not identify itself still holds the port, so our own boot fails loudly.
+- `assert_avd_is` after `wait-for-device`: no answer means REFUSE, because by
+  then our emulator is certainly answering. an unanswered identity is not a
+  matching one. the serial is only recorded for teardown once this passes.
+
+do not "fix" that inconsistency -- it is the point. `make test-android-guards`
+exercises every branch against a live emulator, including a foreign AVD holding
+the port, and asserts on the refusal MESSAGE rather than the exit code, since
+both refusal paths exit 1.
 
 both wrap `test/scripts/appium_e2e_run.sh`, which installs the appium flutter +
 uiautomator2 drivers under `test/e2e/appium/.appium` on first run, builds the
@@ -153,6 +186,9 @@ the workflow injects no version of its own - it only checks that the tag matches
 the pubspec - so a rebuild of a tag from clean source produces the same artifact.
 see [DISTRIBUTION.md](DISTRIBUTION.md) for the signing key, why it must never
 change, and what izzyondroid and f-droid need.
+
+the linux tarball is the flutter bundle as-is, so it carries the desktop entry,
+the icon theme, and the `install.sh` that registers them with the shell.
 
 note: the linux job builds on ubuntu (glibc) to match flutter's prebuilt linux
 engine, which is glibc-linked; the binary needs a comparable glibc at runtime. it

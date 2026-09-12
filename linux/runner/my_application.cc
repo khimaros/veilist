@@ -99,6 +99,21 @@ static gboolean my_application_local_command_line(GApplication* application,
   return TRUE;
 }
 
+// Point GTK's icon theme at the copy of the icons inside our own bundle, found
+// relative to the executable since a bundle unpacks anywhere. A copy installed
+// under $XDG_DATA_HOME (see scripts/install_linux.sh) wins for the shell, and is
+// the only route under Wayland, which has no per-window icon protocol; this is
+// what gives a bundle run straight out of the tarball an icon on X11.
+static void add_bundle_icon_path() {
+  g_autofree gchar* executable = g_file_read_link("/proc/self/exe", nullptr);
+  if (executable == nullptr) {
+    return;
+  }
+  g_autofree gchar* bundle = g_path_get_dirname(executable);
+  g_autofree gchar* icons = g_build_filename(bundle, "data", "icons", nullptr);
+  gtk_icon_theme_append_search_path(gtk_icon_theme_get_default(), icons);
+}
+
 // Implements GApplication::startup.
 static void my_application_startup(GApplication* application) {
   // MyApplication* self = MY_APPLICATION(object);
@@ -106,6 +121,10 @@ static void my_application_startup(GApplication* application) {
   // Perform any actions required at application startup.
 
   G_APPLICATION_CLASS(my_application_parent_class)->startup(application);
+
+  // After the chain-up, which is what initializes GTK.
+  add_bundle_icon_path();
+  gtk_window_set_default_icon_name(APPLICATION_ID);
 }
 
 // Implements GApplication::shutdown.
@@ -141,6 +160,10 @@ MyApplication* my_application_new() {
   // corresponding .desktop file. This ensures better integration by allowing
   // the application to be recognized beyond its binary name.
   g_set_prgname(APPLICATION_ID);
+  // The program name has to stay the application id for that mapping to work,
+  // so name the application separately for everything that shows a person a
+  // name of its own (notifications, GTK's own fallbacks).
+  g_set_application_name("veilist");
 
   return MY_APPLICATION(g_object_new(my_application_get_type(),
                                      "application-id", APPLICATION_ID, "flags",

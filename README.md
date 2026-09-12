@@ -70,6 +70,18 @@ the web build runs veilid in the browser via wasm. build the wasm blob once
 make wasm         # compiles the veilid wasm blob into web/wasm/
 ```
 
+on a linux desktop, register the built app with the shell so it appears in the
+launcher with its name and icon rather than as "com.khimaros.veilist" under a
+blank square:
+
+```
+make install-linux   # desktop entry + icons into ~/.local/share
+```
+
+it keeps running from the build directory, so leave that where it is. the same
+step is in the release tarball as `install.sh`, and `PREFIX=/usr/local` (with
+the right permissions) installs for everyone instead.
+
 ## tests
 
 ```

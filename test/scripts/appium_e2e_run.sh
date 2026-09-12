@@ -25,20 +25,28 @@ ALICE=emulator-5554
 BOB=emulator-5556
 APPIUM_PID=""
 
+# only emulators THIS run booted, so cleanup can never kill someone else's.
+BOOTED=""
+
 cleanup() {
   echo "== tearing down =="
   [ -n "$APPIUM_PID" ] && kill "$APPIUM_PID" 2>/dev/null || true
-  adb -s "$ALICE" emu kill >/dev/null 2>&1 || true
-  [ "$MODE" = two ] && adb -s "$BOB" emu kill >/dev/null 2>&1 || true
+  for s in $BOOTED; do adb -s "$s" emu kill >/dev/null 2>&1 || true; done
 }
 trap cleanup EXIT
 
 boot() { # $1=avd $2=port $3=serial
+  assert_avd_free "$3" "$1" || return 1
   echo "== booting $1 ($3) =="
   emulator -avd "$1" -port "$2" -no-window -no-audio -no-boot-anim \
     -no-snapshot -gpu swiftshader_indirect -accel on \
     >"/tmp/emu_$1.log" 2>&1 &
+  local emu_pid=$!
   adb -s "$3" wait-for-device
+  # only NOW is the serial safe to record: wait-for-device would have succeeded
+  # against a foreign emulator, and BOOTED is what teardown kills.
+  assert_avd_is "$3" "$1" || { kill "$emu_pid" 2>/dev/null; return 1; }
+  BOOTED="$BOOTED $3"
   for _ in $(seq 1 150); do
     local bc; bc="$(adb -s "$3" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
     if [ "$bc" = "1" ] && adb -s "$3" shell pm path android >/dev/null 2>&1; then
@@ -69,7 +77,7 @@ build_apk() {
     --target-platform android-x64)
 }
 
-adb start-server >/dev/null 2>&1 || true
+ensure_adb_server
 ensure_drivers
 build_apk
 boot veilist_alice 5554 "$ALICE"

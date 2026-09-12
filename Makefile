@@ -12,7 +12,8 @@ BUILD_TARGET ?= web
 
 .PHONY: build build-apk build-linux build-web run analyze fmt fmt-check test \
 	test-e2e precommit wasm deps clean android-e2e-setup test-ui-e2e \
-	test-ui-e2e-two test-release-smoke test-compliance
+	test-ui-e2e-two test-release-smoke test-compliance install-linux \
+	test-linux-desktop
 
 build: deps
 	$(FLUTTER) build $(BUILD_TARGET)
@@ -22,6 +23,12 @@ build-apk: deps
 
 build-linux: deps
 	$(FLUTTER) build linux
+
+# register the built bundle with the desktop (entry + icon theme) under
+# ~/.local/share, so the shell shows the app's name and icon instead of its
+# application id; PREFIX overrides where. the app keeps running from the bundle.
+install-linux: build-linux
+	scripts/install_linux.sh
 
 # production web build for deployment at veilid.tech/list. builds the wasm blob
 # if missing and pins --base-href so assets resolve under /list/ (a plain
@@ -83,6 +90,13 @@ test-ui-e2e:
 test-ui-e2e-two:
 	test/scripts/appium_e2e_run.sh two
 
+# exercises the emulator identity guards in android_env.sh against a real
+# emulator on 5570, so it cannot collide with a suite run. these guards are what
+# stop us driving and then killing another project's emulator; run this when
+# touching them. not in precommit -- it boots an emulator.
+test-android-guards:
+	test/scripts/android_env_test.sh
+
 # release smoke test: catches release-only startup failures (e.g. the veilid
 # protected store) that the debug-only appium suite cannot see. needs a booted
 # emulator; pass its serial as SERIAL (default emulator-5554).
@@ -95,6 +109,12 @@ test-release-smoke:
 # quick local run. see test/e2e/matrix/ and test/scripts/matrix_run.sh.
 test-compliance:
 	test/scripts/matrix_run.sh $(PLATFORMS)
+
+# linux desktop integration: launches the real bundle on a private headless
+# display and reads the window's icon and class back with xprop, the way a shell
+# reads a window. needs xvfb. see test/e2e/desktop/.
+test-linux-desktop:
+	test/scripts/desktop_e2e_run.sh
 
 clean:
 	$(FLUTTER) clean

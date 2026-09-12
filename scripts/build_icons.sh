@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # renders every platform icon from the two svg sources in assets/icon/:
-#   veilist_icon.svg    - the full icon (opaque background), used for ios, web
-#                         and the legacy square android launcher
+#   veilist_icon.svg    - the full icon (opaque background), used for ios, web,
+#                         linux and the legacy square android launcher
 #   veilist_icon_fg.svg - the adaptive-icon foreground (transparent), also the
 #                         android 13+ monochrome layer
 # needs inkscape. run it after editing either svg and commit the pngs.
@@ -44,6 +44,23 @@ for s in 192 512; do
   # same rendering; a mask crop cannot reach the shield.
   render "$ICON" "$s" "web/icons/Icon-maskable-$s.png"
 done
+
+echo "== linux (hicolor icon theme) =="
+# the theme is keyed on the application id, which lives once in
+# linux/CMakeLists.txt (flutter's own home for it); read it back rather than
+# repeating it here. cmake installs this tree into the bundle as data/icons.
+APP_ID="$(sed -n 's/^set(APPLICATION_ID "\(.*\)").*/\1/p' linux/CMakeLists.txt)"
+[ -n "$APP_ID" ] || { echo "!! no APPLICATION_ID in linux/CMakeLists.txt" >&2; exit 1; }
+HICOLOR="linux/packaging/icons/hicolor"
+for s in 16 24 32 48 64 128 256 512; do
+  mkdir -p "$HICOLOR/${s}x${s}/apps"
+  render "$ICON" "$s" "$HICOLOR/${s}x${s}/apps/$APP_ID.png"
+done
+# a shell drawing the icon larger than the biggest png (hidpi, the gnome dash)
+# prefers the vector, so the theme carries the source svg too.
+mkdir -p "$HICOLOR/scalable/apps"
+cp "$ICON" "$HICOLOR/scalable/apps/$APP_ID.svg"
+echo "  $HICOLOR/scalable/apps/$APP_ID.svg (scalable)"
 
 echo "== ios =="
 IOS="ios/Runner/Assets.xcassets/AppIcon.appiconset"

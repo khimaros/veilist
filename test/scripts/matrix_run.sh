@@ -20,9 +20,15 @@ want() { printf '%s\n' "${FRONTENDS[@]}" | grep -qx "$1"; }
 # boot an emulator (headless, kvm-accelerated) and block until it finishes
 # booting. $1=avd $2=port $3=serial
 boot_emu() {
+  assert_avd_free "$3" "$1" || return 1
   emulator -avd "$1" -port "$2" -no-window -no-audio -no-boot-anim \
     -no-snapshot -gpu swiftshader_indirect -accel on >"/tmp/emu_matrix_$3.log" 2>&1 &
+  local emu_pid=$!
   adb -s "$3" wait-for-device
+  # only NOW is the serial safe to record: wait-for-device would have succeeded
+  # against a foreign emulator, and BOOTED is what teardown kills.
+  assert_avd_is "$3" "$1" || { kill "$emu_pid" 2>/dev/null; return 1; }
+  BOOTED="$BOOTED $3"
   for _ in $(seq 1 150); do
     local bc; bc="$(adb -s "$3" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
     if [ "$bc" = "1" ] && adb -s "$3" shell pm path android >/dev/null 2>&1; then
@@ -42,13 +48,12 @@ for d in ${VEILIST_DART_DEFINES:-}; do DEFINES+=(--dart-define="$d"); done
 FLAGS=()
 APPIUM_PID=""
 LOGCAT_PIDS=()
+# only emulators THIS run booted, so cleanup can never kill someone else's.
+BOOTED=""
 cleanup() {
   [ -n "$APPIUM_PID" ] && kill "$APPIUM_PID" 2>/dev/null || true
   for p in ${LOGCAT_PIDS[@]+"${LOGCAT_PIDS[@]}"}; do kill "$p" 2>/dev/null || true; done
-  if want android; then
-    adb -s emulator-5554 emu kill >/dev/null 2>&1 || true
-    adb -s emulator-5556 emu kill >/dev/null 2>&1 || true
-  fi
+  for s in $BOOTED; do adb -s "$s" emu kill >/dev/null 2>&1 || true; done
 }
 trap cleanup EXIT
 
@@ -73,6 +78,7 @@ fi
 
 if want android; then
   source "$ROOT/test/scripts/android_env.sh"
+  ensure_adb_server
   export APPIUM_HOME="$ROOT/test/e2e/appium/.appium"
   APPIUM="$ROOT/test/e2e/appium/node_modules/.bin/appium"
   echo "== building driver debug apk =="
