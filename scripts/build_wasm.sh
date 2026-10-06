@@ -19,9 +19,12 @@ export CARGO_HOME="$(mise where rust 2>/dev/null)"
 export PATH="$CARGO_HOME/bin:$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="$ROOT/build/wasm-target"
 
-VEILID_SRC="$(find "$HOME/.pub-cache/git" -maxdepth 1 -type d -name 'veilid-*' \
-  2>/dev/null | head -1)"
-if [ -z "$VEILID_SRC" ]; then
+# the pub cache keeps one checkout per ref ever resolved, so name the one the
+# lockfile points at: a blob from a stale checkout would not match the bindings.
+VEILID_REF="$(awk '/^  veilid:/ { v = 1 } v && /resolved-ref:/ { print $2; exit }' \
+  "$ROOT/pubspec.lock")"
+VEILID_SRC="$HOME/.pub-cache/git/veilid-$VEILID_REF"
+if [ -z "$VEILID_REF" ] || [ ! -d "$VEILID_SRC" ]; then
   echo "veilid source not found in pub cache; run 'flutter pub get' first" >&2
   exit 1
 fi

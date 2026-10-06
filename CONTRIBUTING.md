@@ -145,8 +145,22 @@ address, keeps trying the bootstrap's unreachable ipv6 dial info, and never
 attaches. restricting veilid to ipv4 (via `network.addressTypes` in
 `VeilidService.startup`) makes it attach in seconds. this is an emulator quirk,
 so the flag is off in normal builds and real devices keep dual-stack.
-`--dart-define=VEILIST_VERBOSE=true` streams veilid's own logs for diagnosing
-attach issues.
+
+### diagnosing a real device
+
+every build prints veilid's log at info and above, so start with the installed
+app: `adb logcat -s flutter` shows each attach attempt and why it failed.
+`--dart-define=VEILIST_VERBOSE=true` lowers that to debug (interface addresses,
+gateways, binds). a release install cannot be replaced by a locally signed apk,
+so build the verbose one under a second application id and install it beside:
+
+```
+VEILIST_APP_ID_SUFFIX=.diag mise exec -- flutter build apk --release \
+  --target-platform android-arm64 --dart-define=VEILIST_VERBOSE=true
+```
+
+it shows up as `com.khimaros.veilist.diag` with its own (empty) data; uninstall
+it when done, since it also answers share links.
 
 ### release smoke test
 
@@ -193,7 +207,9 @@ the icon theme, and the `install.sh` that registers them with the shell.
 note: the linux job builds on ubuntu (glibc) to match flutter's prebuilt linux
 engine, which is glibc-linked; the binary needs a comparable glibc at runtime. it
 also runs `scripts/patch_veilid_linux.sh` after `pub get`, since veilid's linux
-plugin cmake assumes an in-monorepo build (see DESIGN.md "native builds").
+plugin cmake assumes an in-monorepo build (see DESIGN.md "native builds"). both
+jobs run `scripts/patch_veilid_ipv6.sh`, without which veilid cannot attach on
+ipv6-only mobile data; `make deps` applies both locally.
 
 ## style
 

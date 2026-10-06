@@ -216,6 +216,27 @@ linux job) run `scripts/patch_veilid_linux.sh` after every `flutter pub get` to
 point corrosion at the plugin's own bundled crate. android is unaffected (a
 different build path), as is web (the wasm blob).
 
+a second patch, `scripts/patch_veilid_ipv6.sh`, changes veilid's behavior and
+applies to every native build (`make deps`, both ci jobs). veilid 0.5.7 starts
+its PublicInternet routing domain only for an address family whose default route
+names a gateway. an ipv6-only mobile carrier running 464xlat (t-mobile us) has
+neither: the cellular link is point-to-point, so the ipv6 default route has no
+gateway, and veilid ignores the clat interface that holds the ipv4 one. network
+startup then fails once a second forever with "PublicInternet routing domain can
+not be started because neither IPV4 nor IPV6 are enabled" and the node never
+leaves `detached`. veilid main already treats a unicast-global ipv6 address as
+enough; the patch applies that one-line change to the pinned tag and fails
+loudly once the tag no longer contains the line, which is the cue to delete it.
+a rebuilder (f-droid) has to run the same script to reproduce a release.
+
+the node's own log is the only place that failure is named, so
+`VeilidService` prints veilid's log at info and above in every build, plus a
+`VEILIST_ATTACH` line per attachment change; `adb logcat -s flutter` on a
+release install is enough to see why a device will not connect.
+`--dart-define=VEILIST_VERBOSE=true` lowers it to debug, and
+`VEILIST_APP_ID_SUFFIX=.diag` in the environment builds that apk under a second
+application id so it installs beside a release whose signing key it lacks.
+
 the android toolchain is pinned to AGP 8.9.1 + gradle 8.11.1: rust-android-gradle
 0.9.6 (which veilid's plugin uses) relies on a gradle api that gradle 9 removed,
 so the whole 9.x line is out, while the camerax the scanner pulls in refuses to

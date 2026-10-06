@@ -14,8 +14,10 @@ import 'phase_signal.dart';
 const String _programName = 'veilist';
 const String _namespace = 'veilist';
 
-// --dart-define=VEILIST_VERBOSE=true streams veilid's own logs (for diagnosing
-// attach/network issues, e.g. on emulators).
+// veilid's own log is always printed at info and above: that is where it says
+// why it cannot attach (a refused routing domain, a bind retry), and a release
+// build on someone's phone is the only place some networks can be observed.
+// --dart-define=VEILIST_VERBOSE=true lowers it to debug.
 const bool _verbose = bool.fromEnvironment('VEILIST_VERBOSE');
 
 // --dart-define=VEILIST_IPV4_ONLY=true restricts veilid to ipv4 (needed on
@@ -156,12 +158,18 @@ class VeilidService extends ChangeNotifier {
     _recovering = true;
     final unusable = now.difference(since).inSeconds;
     try {
-      final String result;
+      String result;
       if (_attachment == AttachmentState.detached) {
         // "network restart" needs an attached node; if it detached itself, the
-        // attach is what is missing.
-        await Veilid.instance.attach().timeout(_kRecoveryTimeout);
-        result = 'attached';
+        // attach is what is missing. a refusal means an attach is already
+        // pending and veilid's own network startup keeps failing, which nothing
+        // here can force; its info log says why.
+        try {
+          await Veilid.instance.attach().timeout(_kRecoveryTimeout);
+          result = 'attached';
+        } on VeilidAPIException {
+          result = 'attach pending, veilid cannot start its network';
+        }
       } else {
         result = await Veilid.instance
             .debug('network restart')
@@ -210,6 +218,10 @@ class VeilidService extends ChangeNotifier {
   void _onUpdate(VeilidUpdate update) {
     switch (update) {
       case VeilidUpdateAttachment():
+        debugPrint(
+          'VEILIST_ATTACH ${update.state.name} '
+          'public=${update.publicInternetReady}',
+        );
         _attachment = update.state;
         _publicInternetReady = update.publicInternetReady;
         // "ready" means attached AND able to reach the public dht, which is
@@ -224,9 +236,7 @@ class VeilidService extends ChangeNotifier {
       case VeilidUpdateValueChange():
         _valueChanges.add(update);
       case VeilidLog():
-        if (_verbose || update.logLevel == VeilidLogLevel.error) {
-          debugPrint('veilid[${update.logLevel.name}]: ${update.message}');
-        }
+        debugPrint('veilid[${update.logLevel.name}]: ${update.message}');
       default:
         break;
     }
@@ -235,6 +245,7 @@ class VeilidService extends ChangeNotifier {
   void _onStreamError(Object error, StackTrace _) => _fail('$error');
 
   void _fail(String message) {
+    debugPrint('VEILIST_FAIL $message');
     _lastError = message;
     _setPhase(VeilidPhase.error);
   }

@@ -61,6 +61,13 @@ jobs:
             exit 1
           fi
           printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+      - name: patch veilid
+        # veilid cannot attach on ipv6-only mobile data without this (see
+        # scripts/patch_veilid_ipv6.sh). the build's own implicit pub get reuses
+        # the cached checkout, so the patch survives.
+        run: |
+          mise exec -- flutter pub get
+          bash scripts/patch_veilid_ipv6.sh
       - name: build apk
         env:
           VEILIST_KEYSTORE: ${{ runner.temp }}/release.jks
@@ -120,6 +127,7 @@ jobs:
           mise exec -- flutter config --enable-linux-desktop
           mise exec -- flutter pub get
           bash scripts/patch_veilid_linux.sh
+          bash scripts/patch_veilid_ipv6.sh
           mise exec -- flutter build linux --release
           tar -C build/linux/x64/release/bundle \
             -czf "veilist-${{ steps.v.outputs.name }}-linux-x64.tar.gz" .

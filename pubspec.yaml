@@ -26,7 +26,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # arm64 alone), reaching 6000 at 0.4.0, so armv7 and x86_64 start from nothing
 # whenever they are added. pre-0.3 releases used the ci run number and shipped
 # arm64 as 2005/2006.
-version: 0.9.2+9200000
+version: 0.9.3+9300000
 
 environment:
   sdk: ^3.12.2
@@ -51,7 +51,7 @@ dependencies:
   veilid:
     git:
       url: https://gitlab.com/veilid/veilid.git
-      ref: v0.5.6
+      ref: v0.5.7
       path: veilid-flutter
 
   # app_links delivers incoming share links (custom scheme + universal/app

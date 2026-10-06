@@ -36,6 +36,12 @@ android {
 
     defaultConfig {
         applicationId = "com.khimaros.veilist"
+        // VEILIST_APP_ID_SUFFIX (e.g. ".diag") installs a diagnostic build beside
+        // the released app, which android will not replace with an apk signed
+        // by a different key.
+        System.getenv("VEILIST_APP_ID_SUFFIX")?.takeIf { it.isNotBlank() }?.let {
+            applicationIdSuffix = it
+        }
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

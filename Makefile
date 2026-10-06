@@ -47,6 +47,8 @@ deps:
 	# rewrite the veilid linux plugin cmake for external consumption (see
 	# scripts/patch_veilid_linux.sh); pub get restores it, so re-run every time.
 	bash scripts/patch_veilid_linux.sh
+	# let veilid attach on ipv6-only mobile data (see scripts/patch_veilid_ipv6.sh).
+	bash scripts/patch_veilid_ipv6.sh
 
 analyze:
 	$(FLUTTER) analyze
