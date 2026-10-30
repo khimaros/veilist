@@ -66,6 +66,7 @@ class ListRepository extends ChangeNotifier {
   final Set<String> _resync = {};
   StreamSubscription<DocChange>? _dirtySub;
   VoidCallback? _onReadinessChanged;
+  bool _wasReady = false;
 
   List<LocalList> get lists => List.unmodifiable(_lists);
   bool get isReady => _network.isReady;
@@ -313,8 +314,15 @@ class ListRepository extends ChangeNotifier {
     if (_foreground) return;
     _foreground = true;
     _dirtySub ??= _network.changes.listen((c) => _syncDirty(c.recordKey));
+    // resync on the not-ready -> ready edge only. readiness also notifies for
+    // every attachment level a ready node reports - every few seconds on a weak
+    // mobile link - and a full roster re-read per ping keeps the node too busy
+    // to serve the list the user actually has open.
+    _wasReady = _network.isReady;
     _onReadinessChanged ??= () {
-      if (_foreground && _network.isReady) unawaited(_syncAll());
+      final reconnected = _network.isReady && !_wasReady;
+      _wasReady = _network.isReady;
+      if (_foreground && reconnected) unawaited(_syncAll());
     };
     _network.readiness.addListener(_onReadinessChanged!);
     await _syncAll();

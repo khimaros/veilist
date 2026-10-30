@@ -148,6 +148,7 @@ class VeilidListNetwork implements ListNetwork {
     bool forceRefresh = false,
   }) async {
     final key = RecordKey.fromString(recordKey);
+    final watch = Stopwatch()..start();
     // only read subkeys that actually hold a value. calling getDHTValue on an
     // empty subkey triggers a blocking network fanout, which hangs the ui while
     // the node is still connecting; a local inspect is non-blocking and tells us
@@ -184,8 +185,19 @@ class VeilidListNetwork implements ListNetwork {
         complete = false;
       }
     }
+    // the app's side of sync, next to veilid's own log: which reads reached the
+    // network, how much they found, and how long they took on this link.
+    debugPrint(
+      'VEILIST_READ ${_short(recordKey)} force=$forceRefresh '
+      'docs=${docs.length} complete=$complete local=${populated.local.length} '
+      'network=${populated.fromNetwork ? populated.network.length : '-'} '
+      'ms=${watch.elapsedMilliseconds}',
+    );
     return (docs: docs, complete: complete);
   }
+
+  // enough of a record key to tell lists apart in a log, and no more of it.
+  String _short(String recordKey) => recordKey.substring(recordKey.length - 6);
 
   // subkeys that currently hold a value, as this node sees them and as the
   // network does. `fromNetwork` says whether the network view answered at all:
@@ -228,10 +240,15 @@ class VeilidListNetwork implements ListNetwork {
   @override
   Future<void> writeDoc(String recordKey, int memberIndex, String json) async {
     final key = RecordKey.fromString(recordKey);
+    final watch = Stopwatch()..start();
     await _rc.setDHTValue(
       key,
       memberDataSubkey(memberIndex),
       Uint8List.fromList(utf8.encode(json)),
+    );
+    debugPrint(
+      'VEILIST_WRITE ${_short(recordKey)} member=$memberIndex '
+      'ms=${watch.elapsedMilliseconds}',
     );
   }
 
@@ -259,6 +276,11 @@ class VeilidListNetwork implements ListNetwork {
             // transient; retried on the next update or a periodic refresh.
           }
         }
+        debugPrint(
+          'VEILIST_CHANGE ${_short(key.toString())} '
+          'member=${sk ~/ kSubkeysPerMember} inline=${inline != null} '
+          'got=${data != null}',
+        );
         if (data != null) {
           yield (
             recordKey: key.toString(),

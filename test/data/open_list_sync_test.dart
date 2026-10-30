@@ -214,6 +214,36 @@ class OrderRecordingNetwork extends FakeListNetwork {
   Future<void> closeRecord(String recordKey) async => events.add('close');
 }
 
+// a network whose network reads take until the test releases them, like a
+// forced veilid read on a weak mobile link outlasting several ticks. counts how
+// many are out at once.
+class SlowReadNetwork extends FakeListNetwork {
+  SlowReadNetwork(super.dht, {this.delay});
+
+  /// when set, every network read takes this long instead of waiting on [gate].
+  final Duration? delay;
+  final gate = Completer<void>();
+  int inFlight = 0;
+  int maxInFlight = 0;
+
+  @override
+  Future<DocsRead> readDocs(
+    String recordKey,
+    int memberCount, {
+    bool forceRefresh = false,
+  }) async {
+    if (!forceRefresh) return super.readDocs(recordKey, memberCount);
+    inFlight++;
+    if (inFlight > maxInFlight) maxInFlight = inFlight;
+    try {
+      await (delay == null ? gate.future : Future<void>.delayed(delay!));
+      return await super.readDocs(recordKey, memberCount, forceRefresh: true);
+    } finally {
+      inFlight--;
+    }
+  }
+}
+
 OpenList openAs(
   FakeDht dht,
   CreatedRecord rec, {
@@ -526,6 +556,72 @@ void main() {
     expect(other.items.single.state, ItemState.unstarted);
     open.dispose();
     other.dispose();
+  });
+
+  test('a slow read is not piled on by the ticks that pass during it', () {
+    // until its first live sync an open list re-reads every tick. a forced read
+    // on a weak link takes longer than a tick, so without a guard every tick
+    // stacks another full network read of the same record onto a node that is
+    // already struggling, and each one makes the next slower.
+    fakeAsync((async) {
+      final dht = FakeDht();
+      final rec = dht.createRecord();
+      writeMember(
+        dht,
+        rec.recordKey,
+        0,
+        Contribution()..addItem('x', 'hello', const LogicalTs(1, 0)),
+      );
+      final net = SlowReadNetwork(dht);
+      final open = openAs(dht, rec, member: 1, net: net);
+      unawaited(open.open());
+      async.flushMicrotasks();
+
+      async.elapse(const Duration(seconds: 30));
+      expect(net.maxInFlight, 1, reason: 'ticks stacked reads of one record');
+
+      // once it lands the list is synced, and nothing is left queued up.
+      net.gate.complete();
+      async.flushMicrotasks();
+      async.elapse(const Duration(seconds: 3));
+      expect(open.syncStatus, SyncStatus.synced);
+      expect(net.inFlight, 0);
+      open.dispose();
+    });
+  });
+
+  test('slow reads do not stretch the background reconcile', () {
+    // a forced read takes 10-12s even on a good link. the reconcile is what
+    // catches a change the watch dropped, so its period has to run from when
+    // the last read STARTED: counting only the ticks no read was out for adds
+    // the whole read time to every period and pushed a dropped change past
+    // 20s on a desktop.
+    fakeAsync((async) {
+      final dht = FakeDht();
+      final rec = dht.createRecord();
+      writeMember(
+        dht,
+        rec.recordKey,
+        0,
+        Contribution()..addItem('x', 'hello', const LogicalTs(1, 0)),
+      );
+      final net = SlowReadNetwork(dht, delay: const Duration(seconds: 10));
+      final open = openAs(dht, rec, member: 1, net: net);
+      unawaited(open.open());
+      async.elapse(const Duration(seconds: 10));
+      expect(open.syncStatus, SyncStatus.synced);
+
+      dht.dropNextChanges(1);
+      writeMember(
+        dht,
+        rec.recordKey,
+        0,
+        Contribution()..addItem('x', 'world', const LogicalTs(2, 0)),
+      );
+      async.elapse(const Duration(seconds: 14));
+      expect(open.items.map((i) => i.text), ['world']);
+      open.dispose();
+    });
   });
 
   test('a live view reconciles a change whose watch update was dropped', () {

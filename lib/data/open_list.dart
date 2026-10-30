@@ -83,12 +83,17 @@ class OpenList extends ChangeNotifier {
   // slot merges whatever is already there into our doc first.
   bool _publishPending = false;
   SyncStatus _sync = SyncStatus.offline;
-  int _ticks = 0;
+  // ticks since the last network read started, whether or not it is still out.
+  int _ticksSinceRead = 0;
   bool _wasReady = false;
   // the running write loop (null when idle), and whether an edit arrived while
   // it was writing and so needs another pass. see _flush.
   Future<void>? _writes;
   bool _writeAgain = false;
+  // the same for network reads: the running read loop, and whether a reconnect
+  // asked for another read while it was out. see refresh.
+  Future<void>? _reads;
+  bool _readAgain = false;
   bool _disposed = false;
   Timer? _syncTimer;
   VoidCallback? _onReadinessChanged;
@@ -187,8 +192,13 @@ class OpenList extends ChangeNotifier {
   void _tick() {
     unawaited(_updateSync());
     if (!_net.isReady) return;
-    _ticks++;
-    if (!_liveSynced || _ticks % _kReconcileEveryTicks == 0) {
+    // the period runs from when the last read STARTED: a forced read takes
+    // 10-12s even on a good link, and counting only idle ticks added that to
+    // every period. a tick finding a read still out has nothing to add - that
+    // read is the re-read it would have started.
+    _ticksSinceRead++;
+    if (_reads != null) return;
+    if (!_liveSynced || _ticksSinceRead >= _kReconcileEveryTicks) {
       unawaited(refresh().catchError((Object _) {}));
     }
   }
@@ -250,7 +260,32 @@ class OpenList extends ChangeNotifier {
   /// force a fresh read of every member's doc from the network and re-fold.
   /// used to pull writes that landed before this device was watching (e.g. a
   /// peer wrote while offline to us, so no change event arrives).
-  Future<void> refresh() async {
+  ///
+  /// one read at a time: a forced read on a weak link outlasts several ticks,
+  /// and stacking more reads of the same record onto a struggling node only
+  /// makes each one slower. a call while a read is out (a reconnect, which may
+  /// have happened after that read started) asks for one more pass instead.
+  Future<void> refresh() {
+    if (_reads != null) {
+      _readAgain = true;
+      return _reads!;
+    }
+    return _reads = _readUntilQuiet();
+  }
+
+  Future<void> _readUntilQuiet() async {
+    try {
+      do {
+        _readAgain = false;
+        _ticksSinceRead = 0;
+        await _readOnce();
+      } while (_readAgain && !_disposed);
+    } finally {
+      _reads = null;
+    }
+  }
+
+  Future<void> _readOnce() async {
     final read = await _net.readDocs(
       local.recordKey,
       _memberCount,

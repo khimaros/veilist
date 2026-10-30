@@ -149,7 +149,8 @@ so the flag is off in normal builds and real devices keep dual-stack.
 ### diagnosing a real device
 
 every build prints veilid's log at info and above, so start with the installed
-app: `adb logcat -s flutter` shows each attach attempt and why it failed.
+app: `adb logcat -s flutter` shows each attach attempt and why it failed, and
+each dht read, write and watch change (`VEILIST_READ`/`_WRITE`/`_CHANGE`).
 `--dart-define=VEILIST_VERBOSE=true` lowers that to debug (interface addresses,
 gateways, binds). a release install cannot be replaced by a locally signed apk,
 so build the verbose one under a second application id and install it beside:

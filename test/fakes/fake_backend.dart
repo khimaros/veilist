@@ -63,7 +63,7 @@ class FakeListNetwork implements ListNetwork {
 
   final FakeDht dht;
 
-  final ValueNotifier<bool> _ready = ValueNotifier<bool>(true);
+  final _ready = _Readiness();
 
   @override
   bool get isReady => _ready.value;
@@ -73,6 +73,11 @@ class FakeListNetwork implements ListNetwork {
 
   /// flip readiness (and notify), so tests can simulate a node attaching.
   void setReady(bool value) => _ready.value = value;
+
+  /// notify without changing readiness, the way VeilidService does for every
+  /// attachment level a ready node reports (attachedFull <-> attachedStrong
+  /// every few seconds on a weak mobile link).
+  void pingReady() => _ready.ping();
 
   @override
   Future<CreatedRecord> createRecord() async => dht.createRecord();
@@ -105,6 +110,12 @@ class FakeListNetwork implements ListNetwork {
 
   @override
   Future<void> deleteRecord(String recordKey) async {}
+}
+
+class _Readiness extends ValueNotifier<bool> {
+  _Readiness() : super(true);
+
+  void ping() => notifyListeners();
 }
 
 /// in-memory store that round-trips through json to mimic real persistence.

@@ -233,6 +233,9 @@ the node's own log is the only place that failure is named, so
 `VeilidService` prints veilid's log at info and above in every build, plus a
 `VEILIST_ATTACH` line per attachment change; `adb logcat -s flutter` on a
 release install is enough to see why a device will not connect.
+`VeilidListNetwork` adds the app's side of sync: `VEILIST_READ` (what a read
+found, whether it was complete, how long it took), `VEILIST_WRITE` and
+`VEILIST_CHANGE` (each watch update and whether its value arrived).
 `--dart-define=VEILIST_VERBOSE=true` lowers it to debug, and
 `VEILIST_APP_ID_SUFFIX=.diag` in the environment builds that apk under a second
 application id so it installs beside a release whose signing key it lacks.
@@ -342,6 +345,20 @@ open-time read runs before the node has attached (isReady false) and never
 retries. so `OpenList` resyncs when `ListNetwork.readiness` fires (the node
 reconnected) and its periodic tick keeps calling `refresh()` until the first
 live read lands.
+
+both of those, and the roster's resync below, act on the not-ready -> ready
+EDGE, never on every readiness notify: `VeilidService` also notifies for each
+attachment level a ready node reports, which on a weak mobile link is every few
+seconds (`attachedFull` <-> `attachedStrong`). answering each ping with a full
+roster re-read kept the node busy re-reading every list, and the list the user
+had open waited behind all of them - it synced only if the roster was left to
+finish first. for the same reason a list keeps one network read out at a time:
+a forced read there outlasts several ticks, a tick that finds one out skips,
+and a reconnect during it asks for a single further pass. a forced read takes
+10-12s even on a good desktop link, so the background reconcile's period runs
+from when the last read started; counting only the ticks with no read out added
+the read time to every period and let a change the watch dropped miss the 20s
+concurrent-edit budget.
 
 a live watch update usually carries the changed member's new doc inline, but
 veilid coalesces several subkey changes made within one flush window (two members

@@ -403,6 +403,39 @@ void main() {
     await repo.stopForegroundSync();
   });
 
+  test(
+    'a ready node changing attachment level does not resync the roster',
+    () async {
+      // veilid reports every attachment level change and the service notifies for
+      // each while staying ready - every few seconds on a weak mobile link. a
+      // full roster resync per ping keeps the node busy re-reading every list,
+      // and the list the user actually opened waits behind all of them.
+      final dht = FakeDht();
+      final net = GatedOpenNetwork(dht);
+      final repo = ListRepository(store: FakeListStore(), network: net);
+      await repo.load();
+      final a = await repo.shareList(await repo.createList('a'));
+      await repo.startForegroundSync();
+      await settle();
+
+      net.reads.clear();
+      for (var i = 0; i < 5; i++) {
+        net.pingReady();
+        await settle();
+      }
+      expect(net.reads[a.recordKey] ?? 0, 0);
+
+      // a real reconnect still pulls what changed while the node was away.
+      net.setReady(false);
+      await settle();
+      net.setReady(true);
+      await settle();
+      expect(net.reads[a.recordKey], 1);
+
+      await repo.stopForegroundSync();
+    },
+  );
+
   // create/join/share re-key or another readiness-triggered sync mutating the
   // roster mid-iteration must not throw "concurrent modification".
   test('roster mutation during a foreground sync does not crash', () async {
