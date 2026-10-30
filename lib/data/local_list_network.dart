@@ -25,6 +25,9 @@ class LocalListNetwork implements ListNetwork {
   bool get isReady => true;
 
   @override
+  String? get connectingDetail => null;
+
+  @override
   Listenable get readiness => _never;
 
   @override
@@ -40,8 +43,13 @@ class LocalListNetwork implements ListNetwork {
     String recordKey,
     int memberCount, {
     bool forceRefresh = false,
+    ReadProgressCallback? onProgress,
   }) async =>
       (docs: _doc == null ? const <int, String>{} : {0: _doc!}, complete: true);
+
+  @override
+  Future<String?> readMemberDoc(String recordKey, int memberIndex) async =>
+      memberIndex == 0 ? _doc : null;
 
   @override
   Future<void> writeDoc(String recordKey, int memberIndex, String json) async {

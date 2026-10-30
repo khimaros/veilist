@@ -229,7 +229,31 @@ enough; the patch applies that one-line change to the pinned tag and fails
 loudly once the tag no longer contains the line, which is the cue to delete it.
 a rebuilder (f-droid) has to run the same script to reproduce a release.
 
-the node's own log is the only place that failure is named, so
+a third patch, `scripts/patch_veilid_inspect.sh`, applies to native builds and
+to `scripts/build_wasm.sh`. in veilid 0.5.7 `inspect_dht_record` seeds
+`consensus_nodes` with the first peer even when a subkey is unwritten
+(`ValueSeqNum::NONE`), then skips every later peer on `if answer_seq.is_some()`
+in `inspect_record.rs`. any sparse record with unwritten member slots therefore
+never reaches its three-node consensus count on those subkeys and never exits
+early (`DoneEarly`), forcing every online inspect to wait out the full 20-peer
+fanout (~8-15s). letting `NONE` enter the `Option<u32>` comparison allows three
+storage peers agreeing on `NONE` to finish in one round-trip, which took forced
+reads from ~11s to under a second. the cost is that a `Some(seq)` supersedes
+`NONE` only until consensus: a subkey at consensus takes no more updates and the
+fanout stops once all of them are, so an inspect can report a written subkey as
+unwritten. a missed peer doc corrects itself on a later reconcile. a missed doc
+in this device's own slot would not, because a publish replaces it, so
+`OpenList._confirmMine` asks for that slot directly with a full `getDHTValue`
+fanout before it treats the slot as empty (R16), in the background so the view
+does not wait on it. the script fails loudly if a future veilid release changes
+that anchor.
+
+`VeilidService.startup` also opens its shared routing context via
+`safeRoutingContext(stability: Stability.lowLatency, sequencing: Sequencing.preferUnordered)`,
+which keeps full sender safety routing (R8) while preferring low-rtt UDP relays
+over ordered TCP circuits.
+
+the node's own log is the only place network startup failures are named, so
 `VeilidService` prints veilid's log at info and above in every build, plus a
 `VEILIST_ATTACH` line per attachment change; `adb logcat -s flutter` on a
 release install is enough to see why a device will not connect.
@@ -295,21 +319,28 @@ a deliberate detach (the e2e harness's offline hook) is never undone.
 the record and its subkeys to the network. a joiner opening the record for the
 first time has never seen it, so `openDHTRecord` must do a network inspect,
 which returns the retryable `TryAgain` until the record is reachable.
-`VeilidListNetwork.openRecord` therefore retries on `TryAgain`; without it a
-joiner opens with zero members and reads nothing. reads (`getDHTValue`) tolerate
-`TryAgain` per subkey and are re-tried on the next refresh.
+`VeilidListNetwork.openRecord` therefore retries briefly on `TryAgain` when the
+node is online, and fails fast without sleeping when the node is offline so
+joining a link with no connection goes straight to the detail screen rather
+than blocking for a minute; `OpenList` and `ListRepository` then retry on the
+readiness edge and periodic ticks. reads (`getDHTValue`) tolerate `TryAgain`
+per subkey and are re-tried on the next refresh.
 
 a joiner also starts read-only, but only the first time. a plain open sees only
 locally-populated subkeys, so a *first-ever* join would render empty and invite
 edits the real data then overwrites. `OpenList` tracks two flags:
 `_loadedFromCache` (the open-time local read or the stored `localDoc` returned
 data, i.e. this list synced before) and `_liveSynced` (a network read or watch
-change has landed this session). `canEdit` needs one of those AND
-`_mineResolved` - see "losing a member doc" - so a re-opened list loads from
-cache and is editable immediately while it revalidates, and only a first-ever
-join with nothing cached waits. until the live read confirms, the sync chip
-reads "syncing"; `awaitingInitialSync` (the detail-body spinner) covers any list
-that has nothing to show and cannot yet be edited.
+change has landed this session). `canEdit` needs one of those so a re-opened
+list loads from cache and is editable immediately while it revalidates, and
+only a first-ever join with nothing cached waits. until the live read confirms,
+the sync chip reads "syncing"; `awaitingInitialSync` covers any list that has
+nothing to show and cannot yet be edited, rendering the current `SyncProgress`
+stage (`waiting for connection...`, `finding shared list...`, `checking member
+slots...`, `fetching updates (k of n)...`) and a determinate progress bar once
+the stale subkey count is known (R13). while an already-editable list is
+syncing, the stage appears beneath the app-bar title and in the sync chip's
+snackbar.
 
 ### losing a member doc
 
@@ -390,7 +421,16 @@ a complete read as a live sync. `complete` means the network answered AND knew
 about every subkey this node does; a network missing one we hold is serving a
 fragment, and an answer of nothing at all is not a sync however cleanly it came
 back. the read itself covers the union of both views, so a record the network
-has forgotten still reads back from this node instead of coming back empty. without that distinction a joiner declared
+has forgotten still reads back from this node instead of coming back empty.
+`VeilidListNetwork.readDocs` narrows `inspectDHTRecord` to the 16 even member
+data subkeys (`0, 2, ..., 30`), compares `localSeqs` against `networkSeqs` so
+subkeys already current on disk are read locally without a network fanout,
+fetches stale subkeys concurrently via `Future.wait`, and coalesces overlapping
+forced reads of the same record into a single inspect + fetch pass. while an
+`OpenList` is active on a record, `ListRepository._syncOnce` keeps its watch
+reference open and skips its own forced read because `OpenList` already
+refreshes on open/reconnect and reports folded titles and content digests back
+to the roster. without the `complete` distinction a joiner declared
 itself synced on the first fragment and then visibly rewrote the list as the
 remaining members' docs arrived - which reads as the app replaying history, when
 it is really the fold gaining one member at a time. a first-ever join also keeps

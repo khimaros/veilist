@@ -69,6 +69,9 @@ class FakeListNetwork implements ListNetwork {
   bool get isReady => _ready.value;
 
   @override
+  String? get connectingDetail => isReady ? null : 'waiting for connection...';
+
+  @override
   Listenable get readiness => _ready;
 
   /// flip readiness (and notify), so tests can simulate a node attaching.
@@ -93,7 +96,12 @@ class FakeListNetwork implements ListNetwork {
     String recordKey,
     int memberCount, {
     bool forceRefresh = false,
+    ReadProgressCallback? onProgress,
   }) async => (docs: dht.readDocs(recordKey), complete: true);
+
+  @override
+  Future<String?> readMemberDoc(String recordKey, int memberIndex) async =>
+      dht.readDocs(recordKey)[memberIndex];
 
   @override
   Future<void> writeDoc(String recordKey, int memberIndex, String json) async =>

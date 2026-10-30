@@ -34,6 +34,7 @@ class LatentNetwork extends FakeListNetwork {
     String recordKey,
     int memberCount, {
     bool forceRefresh = false,
+    ReadProgressCallback? onProgress,
   }) async => isReady
       ? super.readDocs(recordKey, memberCount, forceRefresh: forceRefresh)
       : (docs: const <int, String>{}, complete: false);
@@ -56,6 +57,7 @@ class PartialReadNetwork extends FakeListNetwork {
     String recordKey,
     int memberCount, {
     bool forceRefresh = false,
+    ReadProgressCallback? onProgress,
   }) async {
     if (!forceRefresh) {
       // nothing cached on this device, and a local read is never the whole
@@ -92,6 +94,7 @@ class StaleReplicaNetwork extends FakeListNetwork {
     String recordKey,
     int memberCount, {
     bool forceRefresh = false,
+    ReadProgressCallback? onProgress,
   }) async {
     final stale = staleDocs;
     if (stale == null) {
@@ -146,6 +149,7 @@ class ForgetfulNetwork extends FakeListNetwork {
     String recordKey,
     int memberCount, {
     bool forceRefresh = false,
+    ReadProgressCallback? onProgress,
   }) async => (docs: const <int, String>{}, complete: true);
 }
 
@@ -160,6 +164,7 @@ class UnreadableNetwork extends FakeListNetwork {
     String recordKey,
     int memberCount, {
     bool forceRefresh = false,
+    ReadProgressCallback? onProgress,
   }) async => throw StateError('record not reachable');
 }
 
@@ -181,6 +186,7 @@ class OfflineCachedNetwork extends FakeListNetwork {
     String recordKey,
     int memberCount, {
     bool forceRefresh = false,
+    ReadProgressCallback? onProgress,
   }) async {
     if (isReady) {
       return super.readDocs(recordKey, memberCount, forceRefresh: forceRefresh);
@@ -231,6 +237,7 @@ class SlowReadNetwork extends FakeListNetwork {
     String recordKey,
     int memberCount, {
     bool forceRefresh = false,
+    ReadProgressCallback? onProgress,
   }) async {
     if (!forceRefresh) return super.readDocs(recordKey, memberCount);
     inFlight++;
@@ -269,6 +276,39 @@ class UnfoundRecordNetwork extends FakeListNetwork {
   Future<void> closeRecord(String recordKey) async {
     closes++;
     return super.closeRecord(recordKey);
+  }
+}
+
+// veilid's inspect stops at three peers agreeing a subkey is unwritten, so a doc
+// held by other peers can be missing from a read that still reports complete.
+// [hidden] is that doc's member; [confirmFails] makes the direct read throw, as
+// it does when the node has dropped offline.
+class InspectBlindNetwork extends FakeListNetwork {
+  InspectBlindNetwork(super.dht, {required this.hidden});
+
+  final int hidden;
+  bool confirmFails = false;
+  int confirms = 0;
+
+  @override
+  Future<DocsRead> readDocs(
+    String recordKey,
+    int memberCount, {
+    bool forceRefresh = false,
+    ReadProgressCallback? onProgress,
+  }) async => (
+    docs: {
+      for (final e in dht.readDocs(recordKey).entries)
+        if (e.key != hidden) e.key: e.value,
+    },
+    complete: true,
+  );
+
+  @override
+  Future<String?> readMemberDoc(String recordKey, int memberIndex) async {
+    confirms++;
+    if (confirmFails) throw StateError('TryAgain');
+    return super.readMemberDoc(recordKey, memberIndex);
   }
 }
 
@@ -650,6 +690,93 @@ void main() {
       expect(open.items.map((i) => i.text), ['world']);
       open.dispose();
     });
+  });
+
+  test('a slot a fast read missed is not published over (R16)', () async {
+    // a second device on a member's slot: the doc is on the network, but the
+    // peers that answered the inspect do not hold it. a snapshot published now
+    // would replace everything this member ever contributed.
+    final dht = FakeDht();
+    final rec = dht.createRecord();
+    writeMember(
+      dht,
+      rec.recordKey,
+      0,
+      Contribution()..addItem('o', 'owners', const LogicalTs(1, 0)),
+    );
+    writeMember(
+      dht,
+      rec.recordKey,
+      1,
+      Contribution()..addItem('m', 'mine', const LogicalTs(2, 1)),
+    );
+    final net = InspectBlindNetwork(dht, hidden: 1);
+    final open = openAs(dht, rec, member: 1, net: net);
+    await open.open();
+    await settle();
+    await settle();
+
+    await open.addItem('new');
+    await settle();
+    await settle();
+    expect(stored(dht, rec, 1), containsAll(['mine', 'new']));
+    expect(open.items.map((i) => i.text), contains('mine'));
+    open.dispose();
+  });
+
+  test('an unconfirmed slot holds the publish until it can be asked', () {
+    fakeAsync((async) {
+      final dht = FakeDht();
+      final rec = dht.createRecord();
+      writeMember(
+        dht,
+        rec.recordKey,
+        0,
+        Contribution()..addItem('o', 'owners', const LogicalTs(1, 0)),
+      );
+      writeMember(
+        dht,
+        rec.recordKey,
+        1,
+        Contribution()..addItem('m', 'mine', const LogicalTs(2, 1)),
+      );
+      final net = InspectBlindNetwork(dht, hidden: 1)..confirmFails = true;
+      final open = openAs(dht, rec, member: 1, net: net);
+      unawaited(open.open());
+      async.flushMicrotasks();
+      unawaited(open.addItem('new'));
+      async.flushMicrotasks();
+      expect(stored(dht, rec, 1), ['mine']);
+
+      // the next reconcile asks again.
+      net.confirmFails = false;
+      async.elapse(const Duration(seconds: 15));
+      expect(stored(dht, rec, 1), containsAll(['mine', 'new']));
+      open.dispose();
+    });
+  });
+
+  test('confirming an empty slot does not hold up the read', () async {
+    // the direct read of an empty subkey runs the whole fanout. the list on
+    // screen must not wait for it: only the publish does.
+    final dht = FakeDht();
+    final rec = dht.createRecord();
+    writeMember(
+      dht,
+      rec.recordKey,
+      0,
+      Contribution()..addItem('o', 'owners', const LogicalTs(1, 0)),
+    );
+    final net = FakeListNetwork(dht);
+    final open = openAs(dht, rec, member: 1, net: net);
+    await open.open();
+    await settle();
+    expect(open.syncStatus, SyncStatus.synced);
+    await open.addItem('new');
+    await settle();
+    await settle();
+    expect(stored(dht, rec, 1), ['new']);
+    open.dispose();
   });
 
   test('a record the network could not find is retried until it opens', () {

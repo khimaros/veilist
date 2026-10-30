@@ -36,7 +36,9 @@ class GatedOpenNetwork extends FakeListNetwork {
   GatedOpenNetwork(super.dht);
 
   final Map<String, int> opens = {};
+  final Map<String, int> closes = {};
   final Map<String, int> reads = {};
+  final Map<String, int> forcedReads = {};
   Completer<void>? gate;
 
   /// how many opens throw, like a veilid lookup that came back empty.
@@ -54,13 +56,28 @@ class GatedOpenNetwork extends FakeListNetwork {
   }
 
   @override
+  Future<void> closeRecord(String recordKey) {
+    closes.update(recordKey, (n) => n + 1, ifAbsent: () => 1);
+    return super.closeRecord(recordKey);
+  }
+
+  @override
   Future<DocsRead> readDocs(
     String recordKey,
     int memberCount, {
     bool forceRefresh = false,
+    ReadProgressCallback? onProgress,
   }) {
     reads.update(recordKey, (n) => n + 1, ifAbsent: () => 1);
-    return super.readDocs(recordKey, memberCount, forceRefresh: forceRefresh);
+    if (forceRefresh) {
+      forcedReads.update(recordKey, (n) => n + 1, ifAbsent: () => 1);
+    }
+    return super.readDocs(
+      recordKey,
+      memberCount,
+      forceRefresh: forceRefresh,
+      onProgress: onProgress,
+    );
   }
 }
 
@@ -734,4 +751,60 @@ void main() {
     await restarted.load();
     expect(restarted.lists.single.hasUpdates, isTrue);
   });
+
+  test('joining while offline skips openRecord immediately', () async {
+    final dht = FakeDht();
+    final alice = make(dht);
+    final bobNet = GatedOpenNetwork(dht)..setReady(false);
+    final bob = ListRepository(store: FakeListStore(), network: bobNet);
+    await alice.load();
+    await bob.load();
+
+    final link = await alice.shareList(await alice.createList('trip'));
+    await bob.joinList(link);
+
+    expect(bobNet.opens, isEmpty);
+  });
+
+  test(
+    'joining and viewing a list while foregrounded avoids duplicate syncs',
+    () async {
+      final dht = FakeDht();
+      final alice = make(dht);
+      final bobNet = GatedOpenNetwork(dht);
+      final bob = ListRepository(store: FakeListStore(), network: bobNet);
+      await alice.load();
+      await bob.load();
+      await bob.startForegroundSync();
+
+      final list = await alice.createList('trip');
+      final link = await alice.shareList(list);
+      final bobList = await bob.joinList(link);
+      final bobOpen = bob.open(bobList);
+      await bobOpen.open();
+      await settle();
+
+      // joinList kept the watch open instead of closing and re-opening it, and
+      // only OpenList ran a forced read.
+      expect(bobNet.closes[link.recordKey] ?? 0, 0);
+      expect(bobNet.forcedReads[link.recordKey], 1);
+
+      // a peer edit arriving while the list is open is folded inline by
+      // OpenList without the roster launching a competing forced read.
+      bobNet.forcedReads.clear();
+      final aliceOpen = alice.open(list);
+      await aliceOpen.open();
+      await settle();
+      await aliceOpen.addItem('milk');
+      await settle();
+      await settle();
+
+      expect(bobOpen.items.map((i) => i.text), ['milk']);
+      expect(bobNet.forcedReads[link.recordKey] ?? 0, 0);
+
+      aliceOpen.dispose();
+      bobOpen.dispose();
+      await bob.stopForegroundSync();
+    },
+  );
 }

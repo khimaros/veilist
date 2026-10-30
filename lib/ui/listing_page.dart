@@ -419,6 +419,15 @@ class _ConnectionStatus extends StatelessWidget {
               'public internet: ${service.publicInternetReady}',
               style: Theme.of(context).textTheme.bodySmall,
             ),
+            Text(
+              'peers: ${service.peerCount}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            if (service.connectingDetail != null)
+              Text(
+                service.connectingDetail!,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
           ],
         ),
         actions: [

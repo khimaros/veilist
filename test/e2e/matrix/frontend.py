@@ -188,6 +188,14 @@ class Frontend:
         """one of: synced | syncing | offline | local."""
         raise SkipFlow("sync_status query unsupported")
 
+    def sync_stage(self):
+        """active sync progress stage text on the current list, or '' when idle."""
+        raise SkipFlow("sync_stage query unsupported")
+
+    def wait_until_online(self, timeout_s=90):
+        """wait until this frontend's veilid node reaches public-dht ready."""
+        raise SkipFlow("wait_until_online unsupported")
+
     def connection_status_visible(self):
         raise SkipFlow("connection_status query unsupported")
 

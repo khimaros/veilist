@@ -27,8 +27,10 @@ next, and [REQUIREMENTS.md](REQUIREMENTS.md) for the product requirements.
 - opening a shared link shows a loading screen and goes straight into the list,
   instead of flashing the listing first
 - a list you open from someone else stays read-only ("syncing") until its first
-  data arrives, so you never edit an empty copy that the real list overwrites;
-  once it has synced, it re-opens instantly and is editable while it refreshes
+  data arrives, showing which step it is on (connecting, locating the list,
+  checking member slots, or fetching `k of n` member updates) so you never edit
+  an empty copy that the real list overwrites; once it has synced, it re-opens
+  instantly and is editable while it refreshes
 - every list stays current while the app is open, even the ones you have not
   opened, so the roster reflects what others have changed. they all catch up at
   once rather than one after another, so picking the app up on a second device

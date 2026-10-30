@@ -123,6 +123,11 @@ void installTestHook(ListRepository repo) {
     return opened.syncStatus.name.toJS;
   })().toJS;
 
+  JSPromise<JSString> syncStage(JSString recordKey) => (() async {
+    final opened = await ensureOpen(recordKey.toDart);
+    return (opened.syncProgress?.label ?? '').toJS;
+  })().toJS;
+
   JSPromise<JSString> editable(JSString recordKey) => (() async {
     final opened = await ensureOpen(recordKey.toDart);
     return (opened.canEdit ? 'true' : 'false').toJS;
@@ -168,6 +173,7 @@ void installTestHook(ListRepository repo) {
   hook.setProperty('items'.toJS, items.toJS);
   hook.setProperty('title'.toJS, title.toJS);
   hook.setProperty('syncStatus'.toJS, syncStatus.toJS);
+  hook.setProperty('syncStage'.toJS, syncStage.toJS);
   hook.setProperty('editable'.toJS, editable.toJS);
   hook.setProperty('setOnline'.toJS, setOnline.toJS);
   hook.setProperty('setForeground'.toJS, setForeground.toJS);

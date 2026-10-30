@@ -158,7 +158,10 @@ class _VeilistAppState extends State<VeilistApp> with WidgetsBindingObserver {
               ?child,
               if (_launching)
                 Positioned.fill(
-                  child: _LoadingScreen(openingSharedList: _openingSharedList),
+                  child: _LoadingScreen(
+                    service: widget.service,
+                    openingSharedList: _openingSharedList,
+                  ),
                 ),
             ],
           ),
@@ -171,8 +174,12 @@ class _VeilistAppState extends State<VeilistApp> with WidgetsBindingObserver {
 // covers the app during boot and while a launch link is being opened, so the
 // listing never flashes behind an incoming shared list (R2).
 class _LoadingScreen extends StatelessWidget {
-  const _LoadingScreen({required this.openingSharedList});
+  const _LoadingScreen({
+    required this.service,
+    required this.openingSharedList,
+  });
 
+  final VeilidService service;
   final bool openingSharedList;
 
   @override
@@ -180,15 +187,30 @@ class _LoadingScreen extends StatelessWidget {
     return Material(
       color: Theme.of(context).colorScheme.surface,
       child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(),
-            if (openingSharedList) ...[
-              const SizedBox(height: 16),
-              const Text('opening the shared list...'),
-            ],
-          ],
+        child: ListenableBuilder(
+          listenable: service,
+          builder: (context, _) {
+            final detail = service.connectingDetail;
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(),
+                if (openingSharedList) ...[
+                  const SizedBox(height: 16),
+                  const Text('opening the shared list...'),
+                  if (detail != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      detail,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ],
+              ],
+            );
+          },
         ),
       ),
     );

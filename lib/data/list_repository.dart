@@ -165,31 +165,45 @@ class ListRepository extends ChangeNotifier {
       title: '',
       addedAt: _nowMicros(),
     );
-    try {
-      final memberCount = await _network.openRecord(
-        local.recordKey,
-        writer: local.writer,
-      );
-      final read = await _network.readDocs(local.recordKey, memberCount);
-      // a partial read is fine here: this only warms the roster's cached title,
-      // which the open list refreshes anyway.
-      final folded = foldDocs(read.docs.values.map(_decodeDoc));
-      local.title = folded.title;
-      // joining is a deliberate act and the joiner opens the list next, so
-      // what came back with the invitation does not count as an unseen change.
-      local.seenDigest = local.contentDigest = foldDigest(folded.items);
-      await _network.closeRecord(local.recordKey);
-    } catch (_) {
-      // offline join; the title fills in the first time the list is opened.
+    if (_network.isReady) {
+      var opened = false;
+      try {
+        final memberCount = await _network.openRecord(
+          local.recordKey,
+          writer: local.writer,
+        );
+        opened = true;
+        final read = await _network.readDocs(local.recordKey, memberCount);
+        // a partial read is fine here: this only warms the roster's cached
+        // title, which the open list refreshes anyway.
+        final folded = foldDocs(read.docs.values.map(_decodeDoc));
+        local.title = folded.title;
+        // joining is a deliberate act and the joiner opens the list next, so
+        // what came back with the invitation does not count as an unseen change.
+        local.seenDigest = local.contentDigest = foldDigest(folded.items);
+        if (_foreground &&
+            !_watched.contains(local.recordKey) &&
+            _watched.length < kMaxForegroundWatches) {
+          _watched.add(local.recordKey);
+        } else {
+          await _network.closeRecord(local.recordKey);
+        }
+      } catch (_) {
+        // offline or unreached join; the title fills in when the list opens.
+        if (opened && !_watched.contains(local.recordKey)) {
+          await _network.closeRecord(local.recordKey).catchError((_) {});
+        }
+      }
     }
 
     await _store.save(local);
     _lists.add(local);
     _sort();
     notifyListeners();
-    // adopt into foreground sync (if active) so a peer's later edits reach the
-    // listing even before this list is opened.
-    unawaited(_syncDirty(local.recordKey));
+    // defer one microtask so a caller opening the joined list right away claims
+    // _openCounts first and avoids launching a second forced read beside
+    // OpenList's own.
+    scheduleMicrotask(() => unawaited(_syncDirty(local.recordKey)));
     return local;
   }
 
@@ -241,6 +255,7 @@ class ListRepository extends ChangeNotifier {
       network: _networkFor(list),
       onTitleChanged: (t) => _updateCachedTitle(list, t),
       onDocChanged: (json) => _saveDoc(list, json),
+      onContentRead: (d) => _noteContent(list, d),
       onClosed: () => _release(key),
     );
   }
@@ -251,6 +266,13 @@ class ListRepository extends ChangeNotifier {
       _openCounts[key] = remaining;
     } else {
       _openCounts.remove(key);
+      final list = _byKey(key);
+      if (list != null &&
+          list.published &&
+          list.title.isEmpty &&
+          list.contentDigest == null) {
+        unawaited(_syncDirty(key));
+      }
     }
     if (_openCounts.isEmpty) {
       _allClosed?.complete();
@@ -450,6 +472,12 @@ class ListRepository extends ChangeNotifier {
       if (!_watched.contains(recordKey)) {
         await _network.openRecord(recordKey, writer: list.writer);
         _watched.add(recordKey);
+      }
+      // an open list already folds live changes and refreshes its own view, so
+      // skip a duplicate forced read while keeping the roster's watch ref.
+      if (_openCounts.containsKey(recordKey)) {
+        _unreached.remove(recordKey);
+        return;
       }
       final read = await _network.readDocs(
         recordKey,

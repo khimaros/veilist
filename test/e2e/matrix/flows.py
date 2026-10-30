@@ -26,6 +26,14 @@ STATE_S = 20
 # everything queued while the network was gone waits on it.
 RECOVER_S = 180
 
+# budget for a warm node joining a published list and reaching "synced".
+# unpatched inspectDHTRecord + duplicate reads stalled this out to ~20-35s.
+WARM_JOIN_SYNC_S = 10
+
+# opening a shared link while offline must land on the detail screen right away
+# rather than hanging inside joinList's open retry loop.
+OFFLINE_JOIN_OPEN_S = 10
+
 
 # more items than any driven viewport holds, with room to spare: a lazy list
 # also builds a part-screenful past the fold, and this clears that too.
@@ -582,6 +590,57 @@ def reorder_while_closed_syncs_on_reopen(f):  # the reopen resync bug
     f.wait_for_order(["platypus", "kangaroo"])
 
 
+def join_sync_completes_quickly(f):  # R2/R4/R13 - warm sync latency target
+    # once both nodes are attached, joining a shared list and reaching "synced"
+    # must finish in a few seconds rather than waiting out unwritten-subkey
+    # inspect timeouts and duplicate reads.
+    b = f.peer()
+    f.wait_until_online()
+    b.wait_until_online()
+    name = unique("fastsync")
+    _new_list(f, name)
+    f.add_item("from A")
+    link = f.share()
+    f.wait_for_sync_status("synced", timeout_s=60)
+    start = time.time()
+    assert b.open_link(link)
+    b.wait_for_item("from A", timeout_s=WARM_JOIN_SYNC_S)
+    b.wait_for_sync_status("synced", timeout_s=WARM_JOIN_SYNC_S)
+    elapsed = time.time() - start
+    print(f"  warm join synced in {elapsed:.1f}s", flush=True)
+    assert elapsed <= WARM_JOIN_SYNC_S, (
+        f"warm join took {elapsed:.1f}s (> {WARM_JOIN_SYNC_S}s)"
+    )
+
+
+def sync_progress_visible_while_waiting(f):  # R13 - honest sync stage
+    # joining while offline must open the detail screen immediately, explain why
+    # sync is waiting via sync_stage, and clear that stage once synced.
+    b = f.peer()
+    f.wait_until_online()
+    b.wait_until_online()
+    name = unique("prog")
+    _new_list(f, name)
+    f.add_item("from A")
+    link = f.share()
+    f.wait_for_sync_status("synced", timeout_s=60)
+    b.go_offline()
+    time.sleep(2)
+    start = time.time()
+    assert b.open_link(link)
+    open_elapsed = time.time() - start
+    assert open_elapsed <= OFFLINE_JOIN_OPEN_S, (
+        f"offline open_link blocked for {open_elapsed:.1f}s"
+    )
+    b.wait_for_sync_status("offline", timeout_s=15)
+    stage = b.sync_stage()
+    assert stage != "", "expected visible sync stage while waiting offline"
+    b.go_online()
+    b.wait_for_item("from A")
+    b.wait_for_sync_status("synced", timeout_s=60)
+    assert b.sync_stage() == "", f"expected empty sync stage once synced, got {b.sync_stage()!r}"
+
+
 SINGLE = [
     ("created_lists_are_tracked", created_lists_are_tracked),
     ("open_list_no_infinite_spinner", open_list_no_infinite_spinner),
@@ -624,6 +683,8 @@ COLLAB = [
     ("joiner_edits_offline_before_ever_editing", joiner_edits_offline_before_ever_editing),
     ("edits_survive_the_owner_returning_cold", edits_survive_the_owner_returning_cold),
     ("reorder_while_closed_syncs_on_reopen", reorder_while_closed_syncs_on_reopen),
+    ("join_sync_completes_quickly", join_sync_completes_quickly),
+    ("sync_progress_visible_while_waiting", sync_progress_visible_while_waiting),
 ]
 
 ALL = SINGLE + COLLAB

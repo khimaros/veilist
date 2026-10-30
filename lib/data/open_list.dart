@@ -18,6 +18,27 @@ import 'local_list.dart';
 /// created here but not yet shared: it lives only on-device (nothing published).
 enum SyncStatus { synced, syncing, offline, local }
 
+/// user-visible detail for an active or waiting sync (R13). when [totalSteps]
+/// is positive, [fraction] gives determinate progress in 0..1.
+class SyncProgress {
+  const SyncProgress({
+    required this.label,
+    this.completedSteps,
+    this.totalSteps,
+  });
+
+  final String label;
+  final int? completedSteps;
+  final int? totalSteps;
+
+  double? get fraction {
+    final done = completedSteps;
+    final total = totalSteps;
+    if (done == null || total == null || total <= 0) return null;
+    return (done / total).clamp(0.0, 1.0);
+  }
+}
+
 /// how often the open list does upkeep (sync indicator + reconcile reads).
 const Duration _kTickInterval = Duration(seconds: 3);
 
@@ -33,6 +54,7 @@ class OpenList extends ChangeNotifier {
     required ListNetwork network,
     this.onTitleChanged,
     this.onDocChanged,
+    this.onContentRead,
     this.onClosed,
     HybridClock? clock,
   }) : _net = network,
@@ -51,6 +73,10 @@ class OpenList extends ChangeNotifier {
   /// called with this device's own member doc whenever it changes, so the
   /// roster keeps a copy that does not depend on the dht record store.
   final void Function(String json)? onDocChanged;
+
+  /// called with the folded content digest whenever a whole read or live
+  /// change lands, so the roster tracks content without a competing read.
+  final void Function(String digest)? onContentRead;
 
   /// called once the list is disposed, so the roster knows it is no longer open.
   final VoidCallback? onClosed;
@@ -72,7 +98,7 @@ class OpenList extends ChangeNotifier {
   // indicator can read "synced" rather than "syncing".
   bool _liveSynced = false;
   // this device's own slot is accounted for: we hold the doc already published
-  // there, or a whole read says the slot is empty. every write carries a FULL
+  // there, or the network confirmed it empty. every write carries a FULL
   // snapshot of that doc, so PUBLISHING before this is known puts a doc holding
   // only the newest edit over it - and since an absent assertion is not a
   // tombstone, everything this device ever contributed ceases to exist for
@@ -89,6 +115,9 @@ class OpenList extends ChangeNotifier {
   // this would go to a record veilid does not have open, so it waits too.
   bool _attached = false;
   bool _attaching = false;
+  bool _openingRecord = false;
+  bool _confirmingMine = false;
+  ReadProgress? _readProgress;
   SyncStatus _sync = SyncStatus.offline;
   // ticks since the last network read started, whether or not it is still out.
   int _ticksSinceRead = 0;
@@ -108,6 +137,50 @@ class OpenList extends ChangeNotifier {
 
   SyncStatus get syncStatus => _sync;
 
+  /// detailed sync stage while waiting on the network, or null once settled.
+  SyncProgress? get syncProgress {
+    if (!local.published) return null;
+    if (!_net.isReady) {
+      if (awaitingInitialSync || _writes != null || _publishPending) {
+        return SyncProgress(
+          label: _net.connectingDetail ?? 'waiting for connection...',
+        );
+      }
+      return null;
+    }
+    if (_openingRecord || (!_attached && _error != null)) {
+      return const SyncProgress(label: 'finding shared list...');
+    }
+    final progress = _readProgress;
+    if (_reads != null && progress != null && !_liveSynced) {
+      switch (progress.stage) {
+        case ReadStage.inspecting:
+          return const SyncProgress(label: 'checking member slots...');
+        case ReadStage.fetching:
+          if (progress.total > 0) {
+            return SyncProgress(
+              label:
+                  'fetching updates (${progress.fetched} of '
+                  '${progress.total})...',
+              completedSteps: progress.fetched,
+              totalSteps: progress.total,
+            );
+          }
+          return const SyncProgress(label: 'verifying list...');
+      }
+    }
+    if (_writes != null || _publishPending) {
+      return const SyncProgress(label: 'publishing your changes...');
+    }
+    if (!_liveSynced) {
+      return const SyncProgress(label: 'waiting for peers...');
+    }
+    if (_sync == SyncStatus.syncing) {
+      return const SyncProgress(label: 'publishing your changes...');
+    }
+    return null;
+  }
+
   String get title => _title;
   List<ListItem> get items => _items;
 
@@ -119,6 +192,10 @@ class OpenList extends ChangeNotifier {
   /// why there is nothing to show. a list with content has no error to report:
   /// it stays usable while attaching is retried (R12).
   Object? get error => canEdit ? null : _error;
+
+  /// the tick is running, so a failed attach comes back by itself and [error]
+  /// is not final.
+  bool get retrying => _syncTimer != null;
   bool get isOwner => local.isOwner;
 
   /// a list is editable once there is something to edit - loaded from cache or
@@ -192,10 +269,14 @@ class OpenList extends ChangeNotifier {
     _attaching = true;
     try {
       if (!_recordHeld) {
+        _openingRecord = true;
+        // deferred because open() runs from ListDetailPage.initState.
+        scheduleMicrotask(_notify);
         final count = await _net.openRecord(
           local.recordKey,
           writer: local.writer,
         );
+        _openingRecord = false;
         if (_disposed) {
           unawaited(_net.closeRecord(local.recordKey).catchError((_) {}));
           return;
@@ -209,8 +290,7 @@ class OpenList extends ChangeNotifier {
       // cached data (a list synced before) means we can show it and allow edits
       // immediately; a first-ever join with nothing cached waits for the sync.
       if (read.docs.isNotEmpty) _loadedFromCache = true;
-      // a whole read that did not carry our slot proves the slot is empty.
-      if (_isWhole(read)) _resolveMine();
+      if (_isWhole(read)) await _confirmMine();
       _changeSub = _net.changes
           .where((c) => c.recordKey == local.recordKey)
           .listen(_onRemoteChange);
@@ -225,8 +305,13 @@ class OpenList extends ChangeNotifier {
       unawaited(refresh().catchError((Object _) {}));
     } catch (e) {
       debugPrint('VEILIST_OPEN_FAIL ${local.recordKey}: $e');
-      _error = e;
+      if (_net.isReady) {
+        _error = e;
+      } else {
+        unawaited(_updateSync());
+      }
     } finally {
+      _openingRecord = false;
       _attaching = false;
       _loading = false;
       _notify();
@@ -258,6 +343,8 @@ class OpenList extends ChangeNotifier {
     final ready = _net.isReady;
     if (ready && !_wasReady) {
       unawaited(refresh().catchError((Object _) {}));
+    } else if (!ready && awaitingInitialSync) {
+      _notify();
     }
     _wasReady = ready;
   }
@@ -330,14 +417,24 @@ class OpenList extends ChangeNotifier {
       } while (_readAgain && !_disposed);
     } finally {
       _reads = null;
+      _readProgress = null;
+      _notify();
     }
   }
 
+  void _onReadProgress(ReadProgress progress) {
+    _readProgress = progress;
+    if (!_liveSynced) _notify();
+  }
+
   Future<void> _readOnce() async {
+    _readProgress = (stage: ReadStage.inspecting, fetched: 0, total: 0);
+    if (!_liveSynced) _notify();
     final read = await _net.readDocs(
       local.recordKey,
       _memberCount,
       forceRefresh: true,
+      onProgress: _onReadProgress,
     );
     read.docs.forEach((i, json) {
       // we are the sole authority for our own slot; a network read must not
@@ -357,7 +454,8 @@ class OpenList extends ChangeNotifier {
     if (_isWhole(read)) {
       _loadedFromCache = true;
       if (_net.isReady) _liveSynced = true;
-      _resolveMine();
+      unawaited(_confirmMine());
+      onContentRead?.call(digest);
     }
     _notify();
     unawaited(_updateSync());
@@ -370,6 +468,7 @@ class OpenList extends ChangeNotifier {
     _liveSynced = true; // data landed live from the network
     _receive(c.memberIndex, c.json);
     _refold();
+    onContentRead?.call(digest);
     _notify();
     unawaited(_updateSync());
   }
@@ -480,12 +579,38 @@ class OpenList extends ChangeNotifier {
       } while (_writeAgain);
     } finally {
       _writes = null;
+      _notify();
     }
     unawaited(_updateSync());
   }
 
   // the slot is accounted for now: whatever was published there has been merged
   // into our doc, so an edit held back for exactly that reason can go out.
+  // a whole read that did not carry our slot suggests it is empty, but no more
+  // than that: the inspect behind it stops at three peers agreeing a subkey is
+  // unwritten, and peers past those may hold the doc. the view can take that
+  // risk, since the next reconcile corrects it. a publish cannot: it replaces
+  // the doc outright (R16). so the slot is asked for directly, which runs the
+  // whole fanout, and a failure leaves it unresolved for the next whole read.
+  Future<void> _confirmMine() async {
+    if (_mineResolved || _confirmingMine) return;
+    _confirmingMine = true;
+    try {
+      final json = await _net.readMemberDoc(local.recordKey, local.memberIndex);
+      if (_disposed) return;
+      if (json != null) {
+        _receive(local.memberIndex, json);
+        _refold();
+      }
+      _resolveMine();
+      _notify();
+    } catch (e) {
+      debugPrint('VEILIST_CONFIRM_FAIL ${local.recordKey}: $e');
+    } finally {
+      _confirmingMine = false;
+    }
+  }
+
   void _resolveMine() {
     if (_mineResolved) return;
     _mineResolved = true;

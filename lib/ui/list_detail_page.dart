@@ -165,6 +165,7 @@ class _ListDetailPageState extends State<ListDetailPage>
               // the sync/connection status sits at the far right on every screen.
               _SyncChip(open),
             ],
+            bottom: _SyncBar(open),
           ),
           // the add bar lives in the body (not bottomNavigationBar, which stays
           // behind the keyboard) so resizeToAvoidBottomInset lifts it with the
@@ -184,20 +185,38 @@ class _ListDetailPageState extends State<ListDetailPage>
     if (open.loading) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (open.error != null) {
+    if (open.error != null && !open.retrying) {
       return Center(child: Text('could not open list:\n${open.error}'));
     }
     // a joined list stays read-only until its first sync lands, so the recipient
     // never edits an empty list that the real data then overwrites.
     if (open.awaitingInitialSync) {
-      return const Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('syncing the shared list...'),
-          ],
+      final progress = open.syncProgress;
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 220),
+                child: LinearProgressIndicator(value: progress?.fraction),
+              ),
+              const SizedBox(height: 16),
+              const Text('syncing the shared list...'),
+              if (progress != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  progress.label,
+                  key: const Key('sync_stage'),
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       );
     }
@@ -404,16 +423,55 @@ class _Title extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = open.title.isEmpty ? '(untitled list)' : open.title;
-    const key = Key('list_title');
+    final title = Text(
+      text,
+      key: const Key('list_title'),
+      overflow: TextOverflow.ellipsis,
+    );
     // anyone who can edit the list can rename it by tapping the title (owners
     // always; members once synced). a not-yet-editable shared list is plain.
-    if (!open.canEdit) {
-      return Text(text, key: key, overflow: TextOverflow.ellipsis);
-    }
+    if (!open.canEdit) return title;
+    final stage = open.syncStatus == SyncStatus.syncing
+        ? open.syncProgress?.label
+        : null;
     return InkWell(
       onTap: onRename,
-      child: Text(text, key: key, overflow: TextOverflow.ellipsis),
+      child: stage == null
+          ? title
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                title,
+                Text(
+                  stage,
+                  key: const Key('sync_stage'),
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
     );
+  }
+}
+
+class _SyncBar extends StatelessWidget implements PreferredSizeWidget {
+  const _SyncBar(this.open);
+
+  final OpenList open;
+
+  @override
+  Size get preferredSize => const Size.fromHeight(4);
+
+  @override
+  Widget build(BuildContext context) {
+    final fraction = open.awaitingInitialSync
+        ? null
+        : open.syncProgress?.fraction;
+    if (fraction == null) return const SizedBox(height: 4);
+    return LinearProgressIndicator(minHeight: 4, value: fraction);
   }
 }
 
@@ -498,12 +556,16 @@ class _SyncChip extends StatelessWidget {
       SyncStatus.offline => (Icons.cloud_off, muted, 'offline'),
       SyncStatus.local => (Icons.smartphone, muted, 'saved on this device'),
     };
+    final stage = open.syncProgress?.label;
+    final detail = stage == null
+        ? 'changes are $label'
+        : 'changes are $label - $stage';
     return IconButton(
       tooltip: 'changes are $label',
       icon: Icon(icon, color: color),
       onPressed: () => ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('changes are $label'))),
+      ).showSnackBar(SnackBar(content: Text(detail))),
     );
   }
 }

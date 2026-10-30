@@ -1,9 +1,40 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:veilist/data/list_network.dart';
 import 'package:veilist/data/list_repository.dart';
 import 'package:veilist/ui/list_detail_page.dart';
 
 import '../fakes/fake_backend.dart';
+
+class _HoldReadNetwork extends FakeListNetwork {
+  _HoldReadNetwork(super.dht);
+
+  final Completer<void> forcedReadGate = Completer<void>();
+  ReadProgressCallback? lastProgress;
+
+  @override
+  Future<DocsRead> readDocs(
+    String recordKey,
+    int memberCount, {
+    bool forceRefresh = false,
+    ReadProgressCallback? onProgress,
+  }) async {
+    if (!forceRefresh) return (docs: const <int, String>{}, complete: false);
+    lastProgress = onProgress;
+    await forcedReadGate.future;
+    return super.readDocs(recordKey, memberCount, forceRefresh: true);
+  }
+}
+
+class _FailOpenNetwork extends FakeListNetwork {
+  _FailOpenNetwork(super.dht);
+
+  @override
+  Future<int> openRecord(String recordKey, {required String writer}) async =>
+      throw StateError('KeyNotFound');
+}
 
 void main() {
   testWidgets('add an item, then toggle it complete via the checkbox', (
@@ -209,5 +240,83 @@ void main() {
     await tester.tap(find.byKey(const Key('toggle_completed')));
     await tester.pumpAndSettle();
     expect(find.text('finish'), findsOneWidget);
+  });
+
+  testWidgets('a failed lookup keeps the progress view while it retries', (
+    tester,
+  ) async {
+    // the open is retried forever, and a raw exception in place of the list
+    // reads as final when a retry is already on its way.
+    final dht = FakeDht();
+    final alice = ListRepository(
+      store: FakeListStore(),
+      network: FakeListNetwork(dht),
+    );
+    await alice.load();
+    final link = await alice.shareList(await alice.createList('shared'));
+
+    final bobNet = _FailOpenNetwork(dht);
+    final bob = ListRepository(store: FakeListStore(), network: bobNet);
+    await bob.load();
+    final bobList = await bob.joinList(link);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ListDetailPage(repository: bob, local: bobList),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.textContaining('could not open list'), findsNothing);
+    expect(find.text('syncing the shared list...'), findsOneWidget);
+    expect(find.text('finding shared list...'), findsOneWidget);
+  });
+
+  testWidgets('shows sync stage while waiting on initial sync, then clears', (
+    tester,
+  ) async {
+    final dht = FakeDht();
+    final alice = ListRepository(
+      store: FakeListStore(),
+      network: FakeListNetwork(dht),
+    );
+    final bobNet = _HoldReadNetwork(dht);
+    final bob = ListRepository(store: FakeListStore(), network: bobNet);
+    await alice.load();
+    await bob.load();
+
+    final link = await alice.shareList(await alice.createList('shared'));
+    final bobList = await bob.joinList(link);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ListDetailPage(repository: bob, local: bobList),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('syncing the shared list...'), findsOneWidget);
+    expect(find.byKey(const Key('sync_stage')), findsOneWidget);
+    expect(find.text('checking member slots...'), findsOneWidget);
+
+    bobNet.lastProgress?.call((
+      stage: ReadStage.fetching,
+      fetched: 1,
+      total: 2,
+    ));
+    await tester.pump();
+    expect(find.text('fetching updates (1 of 2)...'), findsOneWidget);
+    final bar = tester.widget<LinearProgressIndicator>(
+      find.byType(LinearProgressIndicator).last,
+    );
+    expect(bar.value, 0.5);
+
+    bobNet.forcedReadGate.complete();
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('sync_stage')), findsNothing);
+    expect(find.text('no items yet - add one below'), findsOneWidget);
   });
 }

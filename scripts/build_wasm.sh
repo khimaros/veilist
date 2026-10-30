@@ -29,6 +29,7 @@ if [ -z "$VEILID_REF" ] || [ ! -d "$VEILID_SRC" ]; then
   exit 1
 fi
 echo "veilid source: $VEILID_SRC"
+bash "$ROOT/scripts/patch_veilid_inspect.sh"
 
 rustup target add wasm32-unknown-unknown
 if ! wasm-bindgen --version 2>/dev/null | grep -q "$WBGEN_VERSION"; then

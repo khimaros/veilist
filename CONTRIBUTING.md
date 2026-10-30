@@ -209,8 +209,11 @@ note: the linux job builds on ubuntu (glibc) to match flutter's prebuilt linux
 engine, which is glibc-linked; the binary needs a comparable glibc at runtime. it
 also runs `scripts/patch_veilid_linux.sh` after `pub get`, since veilid's linux
 plugin cmake assumes an in-monorepo build (see DESIGN.md "native builds"). both
-jobs run `scripts/patch_veilid_ipv6.sh`, without which veilid cannot attach on
-ipv6-only mobile data; `make deps` applies both locally.
+jobs run `scripts/patch_veilid_ipv6.sh` (without which veilid cannot attach on
+ipv6-only mobile data) and `scripts/patch_veilid_inspect.sh` (without which
+sparse `inspect_dht_record` calls wait out the full 20-peer fanout); `make deps`
+applies all three locally, and `scripts/build_wasm.sh` applies the inspect patch
+before compiling the web wasm blob.
 
 ## style
 

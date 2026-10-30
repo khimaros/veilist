@@ -133,9 +133,11 @@ what our build already does right:
 
 what still has to be worked out before submitting:
 
-- the veilid source patch. `scripts/patch_veilid_ipv6.sh` edits the pinned
-  checkout after `flutter pub get`, so the recipe has to run it too or its
-  native library will differ from ours (and will not attach on mobile data).
+- the veilid source patches. `scripts/patch_veilid_ipv6.sh` and
+  `scripts/patch_veilid_inspect.sh` edit the pinned checkout after
+  `flutter pub get`, so the recipe has to run them too or its native library
+  will differ from ours (and will fail to attach on mobile data or stall on
+  sparse record inspects).
 - the rust native library. veilid's core is cross-compiled by cargo during the
   gradle build; rust embeds absolute build paths, so the recipe likely needs
   `--remap-path-prefix` (or an equivalent) to make two machines agree.

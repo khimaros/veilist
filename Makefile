@@ -49,6 +49,8 @@ deps:
 	bash scripts/patch_veilid_linux.sh
 	# let veilid attach on ipv6-only mobile data (see scripts/patch_veilid_ipv6.sh).
 	bash scripts/patch_veilid_ipv6.sh
+	# let sparse inspect_dht_record calls reach DoneEarly on unwritten subkeys.
+	bash scripts/patch_veilid_inspect.sh
 
 analyze:
 	$(FLUTTER) analyze
@@ -69,13 +71,13 @@ test:
 # needs the emulator toolchain once (`make android-e2e-setup`). the full
 # cross-platform sweep is `make test-compliance`; a single lighter column is e.g.
 # `make test-compliance PLATFORMS=linux` (fast desktop, no emulator) or `=web`.
-test-e2e:
+test-e2e: deps
 	test/scripts/matrix_run.sh android
 
 precommit: fmt-check analyze test
 
 # build the veilid wasm blob and stage it under web/wasm/ for the web build.
-wasm:
+wasm: deps
 	scripts/build_wasm.sh
 
 # one-time: install the emulator + a system image into the mise android sdk and
@@ -109,7 +111,7 @@ test-release-smoke:
 # (linux/android/web) through one Frontend abstraction, so they cannot drift.
 # PLATFORMS selects frontends (default all three); e.g. PLATFORMS=linux for a
 # quick local run. see test/e2e/matrix/ and test/scripts/matrix_run.sh.
-test-compliance:
+test-compliance: deps
 	test/scripts/matrix_run.sh $(PLATFORMS)
 
 # linux desktop integration: launches the real bundle on a private headless

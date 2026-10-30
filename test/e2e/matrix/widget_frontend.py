@@ -253,6 +253,18 @@ class WidgetFrontend(Frontend):
                 return status
         return "unknown"
 
+    def sync_stage(self):
+        if self._present(self.ui.key("sync_stage"), 1500):
+            return self.ui.get_text(self.d, self.ui.key("sync_stage"), SHORT_MS)
+        return ""
+
+    def wait_until_online(self, timeout_s=90):
+        self._poll(
+            lambda: self._present(self.ui.tooltip("veilid: online"), 1500),
+            timeout_s,
+            "veilid node online",
+        )
+
     def connection_status_visible(self):
         return self._present(self.ui.key("connection_status"))
 

@@ -57,6 +57,7 @@ class VeilidService extends ChangeNotifier {
   VeilidPhase _phase = VeilidPhase.stopped;
   AttachmentState _attachment = AttachmentState.detached;
   bool _publicInternetReady = false;
+  int _peerCount = 0;
   String? _lastError;
 
   // recovery watchdog: whether we mean to be online at all (so a deliberate
@@ -74,10 +75,34 @@ class VeilidService extends ChangeNotifier {
   VeilidPhase get phase => _phase;
   AttachmentState get attachment => _attachment;
   bool get publicInternetReady => _publicInternetReady;
+  int get peerCount => _peerCount;
   String? get lastError => _lastError;
 
   /// true once the node can actually reach the dht.
   bool get isReady => _phase == VeilidPhase.ready;
+
+  /// human-readable connection stage while the node is not yet [isReady].
+  String? get connectingDetail {
+    switch (_phase) {
+      case VeilidPhase.ready:
+        return null;
+      case VeilidPhase.starting:
+        return 'starting veilid node...';
+      case VeilidPhase.attaching:
+        if (!_wantOnline && _attachment == AttachmentState.detached) {
+          return 'waiting for connection...';
+        }
+        if (!_attachment.isAttached) {
+          return 'connecting to veilid network...';
+        }
+        return _peerCount > 0
+            ? 'establishing private routes ($_peerCount peers)...'
+            : 'establishing private routes...';
+      case VeilidPhase.error:
+      case VeilidPhase.stopped:
+        return 'waiting for connection...';
+    }
+  }
 
   /// the shared routing context. valid only after [startup] completes.
   VeilidRoutingContext get routingContext {
@@ -124,7 +149,12 @@ class VeilidService extends ChangeNotifier {
       }
       _updateStream = await Veilid.instance.startupVeilidCore(config);
       _sub = _updateStream!.listen(_onUpdate, onError: _onStreamError);
-      _routingContext = await Veilid.instance.routingContext();
+      // prefer low-latency udp safety routes over ordered tcp relays while
+      // keeping full sender privacy (R8).
+      _routingContext = await Veilid.instance.safeRoutingContext(
+        stability: Stability.lowLatency,
+        sequencing: Sequencing.preferUnordered,
+      );
 
       _setPhase(VeilidPhase.attaching);
       _wantOnline = true;
@@ -212,6 +242,7 @@ class VeilidService extends ChangeNotifier {
     }
     _attachment = AttachmentState.detached;
     _publicInternetReady = false;
+    _peerCount = 0;
     _setPhase(VeilidPhase.stopped);
   }
 
@@ -220,10 +251,12 @@ class VeilidService extends ChangeNotifier {
       case VeilidUpdateAttachment():
         debugPrint(
           'VEILIST_ATTACH ${update.state.name} '
-          'public=${update.publicInternetReady}',
+          'public=${update.publicInternetReady} '
+          'peers=${update.livePeerCount}',
         );
         _attachment = update.state;
         _publicInternetReady = update.publicInternetReady;
+        _peerCount = update.livePeerCount.toInt();
         // "ready" means attached AND able to reach the public dht, which is
         // what dht record operations actually require.
         if (_publicInternetReady) {

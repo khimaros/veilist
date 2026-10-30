@@ -291,6 +291,16 @@ class WebFrontend(Frontend):
     def sync_status(self):
         return self._call("syncStatus", self._current)
 
+    def sync_stage(self):
+        return self._call("syncStage", self._current)
+
+    def wait_until_online(self, timeout_s=90):
+        self._poll(
+            lambda: self._page.evaluate("() => window.veilistPhase === 'ready'"),
+            timeout_s,
+            "veilid node online",
+        )
+
     def connection_status_visible(self):
         return self._page.evaluate(
             "() => ['attaching','ready'].includes(window.veilistPhase)"
