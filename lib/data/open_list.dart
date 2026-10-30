@@ -82,6 +82,13 @@ class OpenList extends ChangeNotifier {
   // screen and on disk (R12) - only the publish waits, because resolving the
   // slot merges whatever is already there into our doc first.
   bool _publishPending = false;
+  // this list holds a ref on the record, so dispose owes it a close. closing
+  // without one would take the ref of whoever does hold it (the roster's watch).
+  bool _recordHeld = false;
+  // the first read landed and the change subscription is up. a write before
+  // this would go to a record veilid does not have open, so it waits too.
+  bool _attached = false;
+  bool _attaching = false;
   SyncStatus _sync = SyncStatus.offline;
   // ticks since the last network read started, whether or not it is still out.
   int _ticksSinceRead = 0;
@@ -108,7 +115,10 @@ class OpenList extends ChangeNotifier {
   /// (R17): the detail page reports it so looking at a list clears the mark.
   String get digest => foldDigest(_items);
   bool get loading => _loading;
-  Object? get error => _error;
+
+  /// why there is nothing to show. a list with content has no error to report:
+  /// it stays usable while attaching is retried (R12).
+  Object? get error => canEdit ? null : _error;
   bool get isOwner => local.isOwner;
 
   /// a list is editable once there is something to edit - loaded from cache or
@@ -134,7 +144,7 @@ class OpenList extends ChangeNotifier {
   // synced with a list it had not read a byte of.
   bool _isWhole(DocsRead read) => read.complete && read.docs.isNotEmpty;
 
-  /// open the record, load current state, and start watching.
+  /// load what this device holds, start the upkeep, and attach to the record.
   Future<void> open() async {
     try {
       // an unshared list has no dht record and no other member: the on-device
@@ -148,12 +158,53 @@ class OpenList extends ChangeNotifier {
       if (cached != null) {
         _receive(local.memberIndex, cached);
         _loadedFromCache = true;
+        _refold();
+        // this device has the list, so the network lookup below, which can take
+        // a minute, is no reason to spin. a write waits for it instead. the
+        // notify is deferred because the page calls this from initState.
+        _loading = false;
+        scheduleMicrotask(_notify);
       }
-      _memberCount = await _net.openRecord(
-        local.recordKey,
-        writer: local.writer,
-      );
+    } catch (e) {
+      _error = e;
+      _loading = false;
+      _notify();
+      return;
+    }
+    // keep the sync indicator current, and retry until a live sync lands (a
+    // record just opened on a fresh node may not be reachable on the first try).
+    _syncTimer = Timer.periodic(_kTickInterval, (_) => _tick());
+    // resync when the node (re)connects: the watch only delivers changes that
+    // arrive live, so a peer's edit made while we were closed or offline is
+    // otherwise never pulled in.
+    _onReadinessChanged = _resyncIfReconnected;
+    _net.readiness.addListener(_onReadinessChanged!);
+    await _attach();
+  }
+
+  // take out the record and do the first read. a record this node does not hold
+  // needs a network lookup for that, and veilid raises KeyNotFound when one
+  // comes back empty, which a fresh or weak node does at random. so a failure
+  // here is routine and not the end of the list: the tick and a reconnect come
+  // back through refresh until this lands.
+  Future<void> _attach() async {
+    if (_attaching) return;
+    _attaching = true;
+    try {
+      if (!_recordHeld) {
+        final count = await _net.openRecord(
+          local.recordKey,
+          writer: local.writer,
+        );
+        if (_disposed) {
+          unawaited(_net.closeRecord(local.recordKey).catchError((_) {}));
+          return;
+        }
+        _memberCount = count;
+        _recordHeld = true;
+      }
       final read = await _net.readDocs(local.recordKey, _memberCount);
+      if (_disposed) return;
       read.docs.forEach(_receive);
       // cached data (a list synced before) means we can show it and allow edits
       // immediately; a first-ever join with nothing cached waits for the sync.
@@ -164,23 +215,19 @@ class OpenList extends ChangeNotifier {
           .where((c) => c.recordKey == local.recordKey)
           .listen(_onRemoteChange);
       _refold();
-      // keep the sync indicator current, and retry the initial read until a
-      // live sync lands (a record just opened on a fresh node may not be
-      // reachable on the first try).
-      _syncTimer = Timer.periodic(_kTickInterval, (_) => _tick());
-      // resync when the node (re)connects: the watch only delivers changes that
-      // arrive live, so a peer's edit made while we were closed or offline is
-      // otherwise never pulled in.
-      _onReadinessChanged = _resyncIfReconnected;
-      _net.readiness.addListener(_onReadinessChanged!);
+      _attached = true;
+      _error = null;
+      _releasePublish();
       unawaited(_updateSync());
       // a plain read only sees locally-populated subkeys, so a freshly-joined
       // list would show empty. force a network read so shared data loads on
       // open and the indicator reflects real sync, not just "no pending writes".
       unawaited(refresh().catchError((Object _) {}));
     } catch (e) {
+      debugPrint('VEILIST_OPEN_FAIL ${local.recordKey}: $e');
       _error = e;
     } finally {
+      _attaching = false;
       _loading = false;
       _notify();
     }
@@ -266,6 +313,7 @@ class OpenList extends ChangeNotifier {
   /// makes each one slower. a call while a read is out (a reconnect, which may
   /// have happened after that read started) asks for one more pass instead.
   Future<void> refresh() {
+    if (!_attached) return _attach();
     if (_reads != null) {
       _readAgain = true;
       return _reads!;
@@ -405,7 +453,7 @@ class OpenList extends ChangeNotifier {
     // publish waits for a read to resolve it, which merges that content into
     // ours on the way. the chip reads offline meanwhile, which is where this
     // happens in practice.
-    if (!_mineResolved) {
+    if (!_mineResolved || !_attached) {
       _publishPending = true;
       _notify();
       unawaited(_updateSync());
@@ -441,7 +489,11 @@ class OpenList extends ChangeNotifier {
   void _resolveMine() {
     if (_mineResolved) return;
     _mineResolved = true;
-    if (!_publishPending) return;
+    _releasePublish();
+  }
+
+  void _releasePublish() {
+    if (!_publishPending || !_mineResolved || !_attached) return;
     _publishPending = false;
     unawaited(_flush());
   }
@@ -495,12 +547,14 @@ class OpenList extends ChangeNotifier {
     // edit with nothing left to retry it. best-effort: ignore a node already
     // gone.
     final pending = _writes;
-    unawaited(
-      (pending == null
-              ? _net.closeRecord(local.recordKey)
-              : pending.then((_) => _net.closeRecord(local.recordKey)))
-          .catchError((_) {}),
-    );
+    if (_recordHeld) {
+      unawaited(
+        (pending == null
+                ? _net.closeRecord(local.recordKey)
+                : pending.then((_) => _net.closeRecord(local.recordKey)))
+            .catchError((_) {}),
+      );
+    }
     onClosed?.call();
     super.dispose();
   }

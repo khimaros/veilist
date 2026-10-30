@@ -33,6 +33,11 @@ const Duration kRepublishInterval = Duration(hours: 6);
 /// at once would instead swamp the node.
 const int kForegroundSyncConcurrency = 6;
 
+/// how long after a failed sync the roster tries that list again. an empty
+/// lookup is routine on a weak node, and with no watch up for the list nothing
+/// else would bring it back before the next reconnect.
+const Duration kRosterRetryInterval = Duration(seconds: 30);
+
 class ListRepository extends ChangeNotifier {
   ListRepository({required ListStore store, required ListNetwork network})
     : _store = store,
@@ -56,6 +61,11 @@ class ListRepository extends ChangeNotifier {
   // must not race a list's own writes - two writes to one subkey go out at the
   // same sequence and the dht silently keeps only the first (see OpenList).
   final Map<String, int> _openCounts = {};
+  // completes when the last open list closes, resuming a paused roster pass.
+  Completer<void>? _allClosed;
+  // bumped per roster pass and on background, so a pass left paused behind an
+  // open list stops rather than running beside the one started after it.
+  int _pass = 0;
   // records with a sync in flight. VeilidListNetwork refcounts opens, so two
   // concurrent syncs of one record open it twice and the single close on
   // background leaves a ref behind - a watch outliving the foreground and a
@@ -64,6 +74,9 @@ class ListRepository extends ChangeNotifier {
   final Set<String> _syncing = {};
   // records whose sync must run again once the one in flight finishes.
   final Set<String> _resync = {};
+  // records whose last sync failed, and the timer bringing them back.
+  final Set<String> _unreached = {};
+  Timer? _retryTimer;
   StreamSubscription<DocChange>? _dirtySub;
   VoidCallback? _onReadinessChanged;
   bool _wasReady = false;
@@ -239,6 +252,16 @@ class ListRepository extends ChangeNotifier {
     } else {
       _openCounts.remove(key);
     }
+    if (_openCounts.isEmpty) {
+      _allClosed?.complete();
+      _allClosed = null;
+    }
+  }
+
+  Future<void> _untilNoneOpen() async {
+    while (_openCounts.isNotEmpty) {
+      await (_allClosed ??= Completer<void>()).future;
+    }
   }
 
   // keep this device's own doc on-device, alongside the dht record rather than
@@ -332,6 +355,10 @@ class ListRepository extends ChangeNotifier {
   Future<void> stopForegroundSync() async {
     if (!_foreground) return;
     _foreground = false;
+    _pass++;
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _unreached.clear();
     await _dirtySub?.cancel();
     _dirtySub = null;
     if (_onReadinessChanged != null) {
@@ -344,8 +371,11 @@ class ListRepository extends ChangeNotifier {
   }
 
   // sync every list (up to the watch cap) so each has a live watch and a warm
-  // local cache. called on foreground and on reconnect.
+  // local cache. called on foreground and on reconnect. the pass starts nothing
+  // new while a list is open: each forced read takes seconds, and the list on
+  // screen would otherwise wait behind the rest of the roster for its own.
   Future<void> _syncAll() async {
+    final pass = ++_pass;
     if (!_network.isReady) return;
     if (_lists.length > kMaxForegroundWatches) {
       debugPrint(
@@ -360,7 +390,25 @@ class ListRepository extends ChangeNotifier {
         .take(kMaxForegroundWatches)
         .map((l) => l.recordKey)
         .toList();
-    await _eachLimited(keys, kForegroundSyncConcurrency, _syncDirty);
+    await _syncEach(keys, pass);
+  }
+
+  Future<void> _syncEach(List<String> keys, int pass) =>
+      _eachLimited(keys, kForegroundSyncConcurrency, (key) async {
+        await _untilNoneOpen();
+        if (pass == _pass) await _syncDirty(key);
+      });
+
+  // bring back the lists whose sync failed. offline nothing is lost by stopping
+  // here: the reconnect runs a whole pass. it joins the running pass's number
+  // rather than taking a new one, which would stop that pass partway.
+  void _retryLater() {
+    _retryTimer ??= Timer(kRosterRetryInterval, () {
+      _retryTimer = null;
+      if (_foreground && _network.isReady) {
+        unawaited(_syncEach(_unreached.toList(), _pass));
+      }
+    });
   }
 
   // one sync per record at a time, because VeilidListNetwork refcounts opens:
@@ -394,7 +442,10 @@ class ListRepository extends ChangeNotifier {
   Future<void> _syncOnce(String recordKey) async {
     final list = _byKey(recordKey);
     // an unpublished list has no dht record to watch or read.
-    if (list == null || !list.published) return;
+    if (list == null || !list.published) {
+      _unreached.remove(recordKey);
+      return;
+    }
     try {
       if (!_watched.contains(recordKey)) {
         await _network.openRecord(recordKey, writer: list.writer);
@@ -412,8 +463,11 @@ class ListRepository extends ChangeNotifier {
       // changed on the strength of a read that reached nothing (see R16).
       if (read.complete) _noteContent(list, foldDigest(folded.items));
       await _republishIfStale(list);
-    } catch (_) {
-      // unreachable for now; a later change or reconnect retries.
+      _unreached.remove(recordKey);
+    } catch (e) {
+      debugPrint('VEILIST_SYNC_FAIL $recordKey: $e');
+      _unreached.add(recordKey);
+      if (_foreground) _retryLater();
     }
   }
 

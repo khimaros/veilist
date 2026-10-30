@@ -244,6 +244,34 @@ class SlowReadNetwork extends FakeListNetwork {
   }
 }
 
+// a record the network cannot find yet: veilid's open needs a network inspect
+// for a record this node does not hold, and raises KeyNotFound when that lookup
+// comes back empty, which a fresh or weak node does at random. the first
+// [failures] opens throw; [gate], when set, holds an open that will succeed.
+class UnfoundRecordNetwork extends FakeListNetwork {
+  UnfoundRecordNetwork(super.dht, {this.failures = 0});
+
+  int failures;
+  int closes = 0;
+  Completer<void>? gate;
+
+  @override
+  Future<int> openRecord(String recordKey, {required String writer}) async {
+    if (failures > 0) {
+      failures--;
+      throw StateError('KeyNotFound');
+    }
+    await gate?.future;
+    return super.openRecord(recordKey, writer: writer);
+  }
+
+  @override
+  Future<void> closeRecord(String recordKey) async {
+    closes++;
+    return super.closeRecord(recordKey);
+  }
+}
+
 OpenList openAs(
   FakeDht dht,
   CreatedRecord rec, {
@@ -621,6 +649,130 @@ void main() {
       async.elapse(const Duration(seconds: 14));
       expect(open.items.map((i) => i.text), ['world']);
       open.dispose();
+    });
+  });
+
+  test('a record the network could not find is retried until it opens', () {
+    // found on the live web matrix: a peer's open threw KeyNotFound, nothing
+    // retried it, and the list stayed empty for as long as it was open.
+    fakeAsync((async) {
+      final dht = FakeDht();
+      final rec = dht.createRecord();
+      writeMember(
+        dht,
+        rec.recordKey,
+        0,
+        Contribution()..addItem('x', 'hello', const LogicalTs(1, 0)),
+      );
+      final net = UnfoundRecordNetwork(dht, failures: 2);
+      final open = openAs(dht, rec, member: 1, net: net);
+      unawaited(open.open());
+      async.flushMicrotasks();
+      expect(open.loading, isFalse);
+      expect(open.error, isNotNull);
+
+      async.elapse(const Duration(seconds: 12));
+      expect(open.error, isNull);
+      expect(open.items.map((i) => i.text), ['hello']);
+      expect(open.syncStatus, SyncStatus.synced);
+      open.dispose();
+    });
+  });
+
+  test('a cached list stays usable while its record will not open', () {
+    // this device holds the list, so a failed lookup is no reason to replace it
+    // with an error (R12). an edit lands locally and publishes once it opens.
+    fakeAsync((async) {
+      final dht = FakeDht();
+      final rec = dht.createRecord();
+      final mine = MemberDoc(
+        contribution: Contribution()
+          ..addItem('x', 'mine', const LogicalTs(1, 0)),
+      );
+      final net = UnfoundRecordNetwork(dht, failures: 2);
+      final open = openAs(
+        dht,
+        rec,
+        member: 1,
+        net: net,
+        localDoc: jsonEncode(mine.toJson()),
+      );
+      unawaited(open.open());
+      async.flushMicrotasks();
+      expect(open.error, isNull);
+      expect(open.items.map((i) => i.text), ['mine']);
+
+      unawaited(open.addItem('later'));
+      async.flushMicrotasks();
+      expect(open.items.map((i) => i.text), containsAll(['mine', 'later']));
+      expect(stored(dht, rec, 1), isEmpty);
+
+      async.elapse(const Duration(seconds: 12));
+      expect(stored(dht, rec, 1), containsAll(['mine', 'later']));
+      open.dispose();
+    });
+  });
+
+  test('a cached list shows at once while its record is slow to open', () {
+    // veilid's open of a record this node does not hold can take a minute of
+    // lookups. the device already has the list, so that is no reason to spin.
+    fakeAsync((async) {
+      final dht = FakeDht();
+      final rec = dht.createRecord();
+      final mine = MemberDoc(
+        contribution: Contribution()
+          ..addItem('x', 'mine', const LogicalTs(1, 0)),
+      );
+      final net = UnfoundRecordNetwork(dht)..gate = Completer<void>();
+      final open = openAs(
+        dht,
+        rec,
+        member: 1,
+        net: net,
+        localDoc: jsonEncode(mine.toJson()),
+      );
+      unawaited(open.open());
+      async.flushMicrotasks();
+      expect(open.loading, isFalse);
+      expect(open.items.map((i) => i.text), ['mine']);
+
+      net.gate!.complete();
+      async.flushMicrotasks();
+      open.dispose();
+    });
+  });
+
+  test('an open that never succeeded releases nothing on dispose', () {
+    // closing a record this list never opened would take the ref of whoever did
+    // hold it - the roster, whose watch would then silently stop.
+    fakeAsync((async) {
+      final dht = FakeDht();
+      final rec = dht.createRecord();
+      final net = UnfoundRecordNetwork(dht, failures: 99);
+      final open = openAs(dht, rec, member: 1, net: net);
+      unawaited(open.open());
+      async.flushMicrotasks();
+      open.dispose();
+      async.flushMicrotasks();
+      expect(net.closes, 0);
+    });
+  });
+
+  test('an open landing after dispose is released', () {
+    fakeAsync((async) {
+      final dht = FakeDht();
+      final rec = dht.createRecord();
+      final net = UnfoundRecordNetwork(dht)..gate = Completer<void>();
+      final open = openAs(dht, rec, member: 1, net: net);
+      unawaited(open.open());
+      async.flushMicrotasks();
+      open.dispose();
+      async.flushMicrotasks();
+      expect(net.closes, 0);
+
+      net.gate!.complete();
+      async.flushMicrotasks();
+      expect(net.closes, 1);
     });
   });
 

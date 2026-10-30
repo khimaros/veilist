@@ -360,6 +360,20 @@ from when the last read started; counting only the ticks with no read out added
 the read time to every period and let a change the watch dropped miss the 20s
 concurrent-edit budget.
 
+attaching to the record is retried the same way. a record this node does not
+hold needs a network lookup to open, and veilid raises `KeyNotFound` (not
+`TryAgain`) when that lookup comes back empty, which a fresh or weak node does
+at random. `open()` therefore starts the tick and the readiness listener before
+it touches the network, and `refresh()` routes to `_attach` until attaching has
+landed. a list with cached content shows at once and stays editable meanwhile
+(R12), with the publish held back the same way as for an unresolved slot, since
+a write to a record veilid does not have open is rejected. dispose only closes a
+record this list took a ref on, so a failed open cannot release the roster's
+ref. the roster has the same exposure: a list whose sync failed has no watch up,
+so nothing would bring it back before a reconnect. it goes in `_unreached`, and
+`kRosterRetryInterval` later those lists alone are tried again, under the same
+pause as a pass.
+
 a live watch update usually carries the changed member's new doc inline, but
 veilid coalesces several subkey changes made within one flush window (two members
 editing at once) into a single value-change with no inline value, expecting the
@@ -424,6 +438,19 @@ dropping it leaves the roster sitting on a view the peer has already moved past,
 with nothing else coming to correct it. it is remembered instead, and the sync
 runs again as soon as the one in flight finishes (the same shape as `_flush`'s
 write loop).
+
+a roster pass starts nothing new while any list is open. every resume rebuilds
+the whole roster, and on web every page load is a resume from cold; with forced
+reads at 10-12s each, that pass is the heaviest load the node carries while the
+user is looking at a list. the benefit is unmeasured: the roster's limit does
+not apply to an open list's read, and veilid's own limit
+(`max_concurrent_operations`, 16) is not reached by it, so the read does not
+queue behind the pass except when both read the same record. the reads already
+out finish, the pass waits for the last open list to close, then carries on.
+watch-driven resyncs of single lists still run meanwhile, since they answer a
+real change. each pass carries a
+number, bumped by the next pass and by backgrounding, so a pass left paused
+across a trip to background stops instead of running beside the fresh one.
 
 ### telling the user what changed (R17)
 

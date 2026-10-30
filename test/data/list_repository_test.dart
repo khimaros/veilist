@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:veilist/data/list_network.dart';
 import 'package:veilist/data/list_repository.dart';
 import 'package:veilist/data/list_store.dart';
+import 'package:veilist/data/share_link.dart';
 import 'package:veilist/models/item_state.dart';
 
 import '../fakes/fake_backend.dart';
@@ -37,10 +39,17 @@ class GatedOpenNetwork extends FakeListNetwork {
   final Map<String, int> reads = {};
   Completer<void>? gate;
 
+  /// how many opens throw, like a veilid lookup that came back empty.
+  int failOpens = 0;
+
   @override
   Future<int> openRecord(String recordKey, {required String writer}) async {
     opens.update(recordKey, (n) => n + 1, ifAbsent: () => 1);
     await gate?.future;
+    if (failOpens > 0) {
+      failOpens--;
+      throw StateError('KeyNotFound');
+    }
     return super.openRecord(recordKey, writer: writer);
   }
 
@@ -435,6 +444,123 @@ void main() {
       await repo.stopForegroundSync();
     },
   );
+
+  // a forced read takes 10-12s on the live dht, and a cold start (every page
+  // load on web) re-reads the whole roster. a list opened during that pass must
+  // not wait behind the rest of the roster for its own read.
+  test('an open list pauses the roster pass until it closes', () async {
+    final dht = FakeDht();
+    final net = GatedOpenNetwork(dht);
+    final repo = ListRepository(store: FakeListStore(), network: net);
+    await repo.load();
+    for (var i = 0; i < kForegroundSyncConcurrency + 4; i++) {
+      await repo.shareList(await repo.createList('l$i'));
+    }
+    net.opens.clear();
+    net.gate = Completer<void>();
+    unawaited(repo.startForegroundSync());
+    await settle();
+    expect(net.opens.length, kForegroundSyncConcurrency);
+
+    final opened = repo.open(repo.lists.first);
+    net.gate!.complete();
+    for (var i = 0; i < 5; i++) {
+      await settle();
+    }
+    // the reads already out finish; nothing new starts while the list is open.
+    expect(net.opens.length, kForegroundSyncConcurrency);
+
+    opened.dispose();
+    for (var i = 0; i < 5; i++) {
+      await settle();
+    }
+    expect(net.opens.length, repo.lists.length);
+    await repo.stopForegroundSync();
+  });
+
+  // a lookup that came back empty says nothing about the list. with no watch up
+  // no change event will ever arrive for it, so unless the roster tries again it
+  // stays stale until the next reconnect or resume.
+  test('a roster list the network could not find is tried again', () {
+    fakeAsync((async) {
+      final net = GatedOpenNetwork(FakeDht());
+      final repo = ListRepository(store: FakeListStore(), network: net);
+      unawaited(repo.load());
+      async.flushMicrotasks();
+      late ShareLink link;
+      unawaited(
+        repo.createList('a').then(repo.shareList).then((l) => link = l),
+      );
+      async.flushMicrotasks();
+
+      net.reads.clear();
+      net.failOpens = 1;
+      unawaited(repo.startForegroundSync());
+      async.flushMicrotasks();
+      expect(net.reads[link.recordKey] ?? 0, 0);
+
+      async.elapse(const Duration(seconds: 35));
+      expect(net.reads[link.recordKey], 1);
+
+      // reached now, so it is left alone.
+      async.elapse(const Duration(minutes: 5));
+      expect(net.reads[link.recordKey], 1);
+      unawaited(repo.stopForegroundSync());
+      async.flushMicrotasks();
+    });
+  });
+
+  test('a backgrounded roster stops trying again', () {
+    fakeAsync((async) {
+      final net = GatedOpenNetwork(FakeDht());
+      final repo = ListRepository(store: FakeListStore(), network: net);
+      unawaited(repo.load());
+      async.flushMicrotasks();
+      unawaited(repo.createList('a').then(repo.shareList));
+      async.flushMicrotasks();
+
+      net.opens.clear();
+      net.failOpens = 1;
+      unawaited(repo.startForegroundSync());
+      async.flushMicrotasks();
+      unawaited(repo.stopForegroundSync());
+      async.flushMicrotasks();
+
+      async.elapse(const Duration(minutes: 5));
+      expect(net.opens.values.single, 1);
+      expect(async.pendingTimers, isEmpty);
+    });
+  });
+
+  test('a paused roster pass does not outlive a trip to background', () async {
+    final dht = FakeDht();
+    final net = GatedOpenNetwork(dht);
+    final repo = ListRepository(store: FakeListStore(), network: net);
+    await repo.load();
+    for (var i = 0; i < kForegroundSyncConcurrency + 4; i++) {
+      await repo.shareList(await repo.createList('l$i'));
+    }
+    final opened = repo.open(repo.lists.first);
+    unawaited(repo.startForegroundSync());
+    await settle();
+    await repo.stopForegroundSync();
+    net.reads.clear();
+    unawaited(repo.startForegroundSync());
+    await settle();
+
+    // only the pass started on return runs, so each list is read once.
+    opened.dispose();
+    for (var i = 0; i < 10; i++) {
+      await settle();
+    }
+    expect(net.reads.length, repo.lists.length);
+    expect(
+      net.reads.values.every((n) => n == 1),
+      isTrue,
+      reason: '${net.reads}',
+    );
+    await repo.stopForegroundSync();
+  });
 
   // create/join/share re-key or another readiness-triggered sync mutating the
   // roster mid-iteration must not throw "concurrent modification".

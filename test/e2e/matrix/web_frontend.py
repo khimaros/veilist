@@ -11,6 +11,7 @@ import os
 import socket
 import socketserver
 import threading
+import time
 
 from frontend import Frontend
 
@@ -19,6 +20,28 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."
 # build/web) so the test artifact - which carries the window.veilistTest backdoor
 # and a "/" base-href - never overwrites a deployable build. see matrix_run.sh.
 WEB_DIR = os.path.join(_ROOT, "build", "web-e2e")
+
+# set VEILIST_E2E_LOGDIR to keep each page's console (web-1.log, web-2.log, ...),
+# stamped like linux_frontend's app logs so two nodes can be lined up.
+_LOG_DIR = os.environ.get("VEILIST_E2E_LOGDIR")
+_log_seq = 0
+
+
+def _new_page(ctx):
+    """open a page, keeping its console output if we are keeping logs."""
+    global _log_seq
+    page = ctx.new_page()
+    if _LOG_DIR:
+        _log_seq += 1
+        os.makedirs(_LOG_DIR, exist_ok=True)
+        sink = open(os.path.join(_LOG_DIR, f"web-{_log_seq}.log"), "w")
+
+        def keep(msg):
+            sink.write(f"{time.strftime('%H:%M:%S')} {msg.text}\n")
+            sink.flush()
+
+        page.on("console", keep)
+    return page
 
 
 class _IsolatedHandler(http.server.SimpleHTTPRequestHandler):
@@ -90,7 +113,7 @@ class WebFrontend(Frontend):
             args=["--no-sandbox", "--disable-dev-shm-usage"],
         )
         self._ctx = self._browser.new_context()
-        self._page = _boot(self._ctx.new_page(), self._base)
+        self._page = _boot(_new_page(self._ctx), self._base)
 
     def reset(self):
         pass  # flows are independent by record key; nothing to navigate
@@ -104,7 +127,7 @@ class WebFrontend(Frontend):
         p._base = self._base
         p._browser = self._browser
         p._ctx = self._browser.new_context()
-        p._page = _boot(p._ctx.new_page(), self._base)
+        p._page = _boot(_new_page(p._ctx), self._base)
         return p
 
     def stop(self):
